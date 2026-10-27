@@ -3,16 +3,19 @@
 //! picks a rectangle, which is cropped from the monitor image here in Rust; with Space the
 //! window under the cursor can be captured instead.
 
-use std::{path::Path, sync::Mutex};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
     ipc::Response,
 };
-use xcap::image::{ImageEncoder, RgbaImage, codecs::png};
+use xcap::image::RgbaImage;
 
-use crate::capture;
+use crate::{capture, images};
 
 const WINDOW_PREFIX: &str = "selector-";
 const PAGE: &str = "selector.html";
@@ -35,7 +38,8 @@ struct MonitorShot {
     y: i32,
     width: u32,
     height: u32,
-    image: RgbaImage,
+    /// Shared so the overlay can be sent its frame without copying under the lock.
+    image: Arc<RgbaImage>,
 }
 
 impl MonitorShot {
@@ -85,9 +89,37 @@ pub fn crop_rect(rect: Rect, scale: f64, image_width: u32, image_height: u32) ->
     (right > left && bottom > top).then_some((left, top, right - left, bottom - top))
 }
 
+/// Without Screen Recording permission CoreGraphics still "succeeds" but returns only the
+/// wallpaper, so the permission is checked up front. When it is missing, macOS is asked to
+/// prompt for it and the caller falls back to `screencapture`, which handles its own prompt.
+#[cfg(target_os = "macos")]
+fn screen_capture_allowed() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+    // SAFETY: both functions take no arguments and only query or prompt for the permission.
+    unsafe {
+        if CGPreflightScreenCaptureAccess() {
+            return true;
+        }
+        CGRequestScreenCaptureAccess();
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn screen_capture_allowed() -> bool {
+    true
+}
+
 /// Captures every monitor and opens the overlays. On error nothing is left open, so the
-/// caller can fall back to the system selector.
+/// caller can fall back to the system selector; the capture stays "in progress" either way.
 pub fn open(app: &AppHandle) -> Result<(), String> {
+    if !screen_capture_allowed() {
+        return Err("Screen Recording permission is not granted".into());
+    }
     let monitors = xcap::Monitor::all().map_err(|error| error.to_string())?;
     if monitors.is_empty() {
         return Err("no monitors found".into());
@@ -100,7 +132,7 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
                 y: monitor.y()?,
                 width: monitor.width()?,
                 height: monitor.height()?,
-                image: monitor.capture_image()?,
+                image: Arc::new(monitor.capture_image()?),
             })
         })
         .collect::<xcap::XCapResult<Vec<_>>>()
@@ -116,8 +148,9 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
 
     for (index, (x, y, width, height)) in layout.into_iter().enumerate() {
         if let Err(error) = open_overlay(app, index, x, y, width, height) {
-            close_overlays(app);
-            app.state::<Selection>().0.lock().unwrap().take();
+            // Taken before closing, so the overlays' destroy events find no session and do
+            // not release `in_progress` while the fallback selector is about to run.
+            take_session(app);
             return Err(error.to_string());
         }
     }
@@ -126,25 +159,26 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
 
 fn list_windows() -> xcap::XCapResult<Vec<WindowInfo>> {
     let own_pid = std::process::id();
-    let mut windows = Vec::new();
-    for window in xcap::Window::all()? {
-        let Ok(owner) = window.app_name() else { continue };
-        if IGNORED_OWNERS.contains(&owner.as_str()) || window.pid()? == own_pid || window.is_minimized()? {
-            continue;
-        }
-        let (width, height) = (window.width()?, window.height()?);
-        if width < MIN_WINDOW_SIZE || height < MIN_WINDOW_SIZE {
-            continue;
-        }
-        windows.push(WindowInfo {
-            id: window.id()?,
-            x: f64::from(window.x()?),
-            y: f64::from(window.y()?),
-            width: f64::from(width),
-            height: f64::from(height),
-        });
+    Ok(xcap::Window::all()?.iter().filter_map(|window| window_info(window, own_pid)).collect())
+}
+
+/// `None` for windows to leave out, including any that close while the list is read.
+fn window_info(window: &xcap::Window, own_pid: u32) -> Option<WindowInfo> {
+    let owner = window.app_name().ok()?;
+    if IGNORED_OWNERS.contains(&owner.as_str()) || window.pid().ok()? == own_pid || window.is_minimized().ok()? {
+        return None;
     }
-    Ok(windows)
+    let (width, height) = (window.width().ok()?, window.height().ok()?);
+    if width < MIN_WINDOW_SIZE || height < MIN_WINDOW_SIZE {
+        return None;
+    }
+    Some(WindowInfo {
+        id: window.id().ok()?,
+        x: f64::from(window.x().ok()?),
+        y: f64::from(window.y().ok()?),
+        width: f64::from(width),
+        height: f64::from(height),
+    })
 }
 
 fn open_overlay(app: &AppHandle, index: usize, x: i32, y: i32, width: u32, height: u32) -> tauri::Result<()> {
@@ -192,22 +226,39 @@ fn close_overlays(app: &AppHandle) {
     }
 }
 
-/// Ends the selection: closes every overlay and frees the frozen images. Returns the
-/// session so a finished selection can still crop from it.
-fn end(app: &AppHandle) -> Option<Session> {
+/// Takes the session and closes every overlay. It does not release `in_progress`: whoever
+/// takes the session owns the rest of the capture and releases it when that is done.
+fn take_session(app: &AppHandle) -> Option<Session> {
     let session = app.state::<Selection>().0.lock().unwrap().take();
     if session.is_some() {
         close_overlays(app);
-        capture::selection_ended(app);
     }
     session
+}
+
+/// Ends a selection that produced no capture.
+fn abandon(app: &AppHandle) {
+    if take_session(app).is_some() {
+        capture::selection_ended(app);
+    }
 }
 
 /// An overlay closed some other way (Cmd+W, a crash) must not leave the others behind.
 pub fn on_window_destroyed(app: &AppHandle, label: &str) {
     if label.starts_with(WINDOW_PREFIX) {
-        end(app);
+        abandon(app);
     }
+}
+
+/// Runs the rest of a finished selection, then releases `in_progress`. A failure is shown
+/// in the editor instead of being lost with the closed overlays.
+async fn complete(app: &AppHandle, job: impl Future<Output = Result<(), String>>) -> Result<(), String> {
+    let result = job.await;
+    if let Err(error) = &result {
+        capture::report_failure(app, error);
+    }
+    capture::selection_ended(app);
+    result
 }
 
 /// The monitor an overlay belongs to comes from its label, never from the page.
@@ -246,30 +297,38 @@ pub fn selector_info(window: WebviewWindow, selection: State<'_, Selection>) -> 
 }
 
 /// The frozen monitor image as raw RGBA, so nothing has to be encoded before showing it.
+/// Each overlay asks for its own monitor only; the one copy IPC needs is made after the
+/// lock is released, off the main thread.
 #[tauri::command]
-pub fn selector_frame(window: WebviewWindow, selection: State<'_, Selection>) -> Result<Response, String> {
+pub async fn selector_frame(window: WebviewWindow, selection: State<'_, Selection>) -> Result<Response, String> {
     let index = monitor_index(&window)?;
-    let session = selection.0.lock().unwrap();
-    let shot = session.as_ref().and_then(|session| session.monitors.get(index)).ok_or("no selection in progress")?;
-    Ok(Response::new(shot.image.as_raw().clone()))
+    let image = {
+        let session = selection.0.lock().unwrap();
+        let shot = session.as_ref().and_then(|session| session.monitors.get(index)).ok_or("no selection in progress")?;
+        Arc::clone(&shot.image)
+    };
+    Ok(Response::new(image.as_raw().to_vec()))
 }
 
 #[tauri::command]
 pub fn cancel_selection(app: AppHandle) {
-    end(&app);
+    abandon(&app);
 }
 
 /// Crops the dragged rectangle (points, relative to the overlay) from its monitor image.
 #[tauri::command]
 pub async fn finish_selection(app: AppHandle, window: WebviewWindow, rect: Rect) -> Result<(), String> {
     let index = monitor_index(&window)?;
-    let session = end(&app).ok_or("no selection in progress")?;
-    let shot = session.monitors.into_iter().nth(index).ok_or("unknown monitor")?;
-    let scale = shot.scale();
-    let (x, y, width, height) =
-        crop_rect(rect, scale, shot.image.width(), shot.image.height()).ok_or("the selection is empty")?;
-    let image = xcap::image::imageops::crop_imm(&shot.image, x, y, width, height).to_image();
-    store(&app, image, scale).await
+    let session = take_session(&app).ok_or("no selection in progress")?;
+    complete(&app, async {
+        let shot = session.monitors.into_iter().nth(index).ok_or("unknown monitor")?;
+        let scale = shot.scale();
+        let (x, y, width, height) =
+            crop_rect(rect, scale, shot.image.width(), shot.image.height()).ok_or("the selection is empty")?;
+        let image = xcap::image::imageops::crop_imm(shot.image.as_ref(), x, y, width, height).to_image();
+        store(&app, image, scale).await
+    })
+    .await
 }
 
 /// Captures one window by itself (so overlapping windows are left out). If the system
@@ -277,7 +336,11 @@ pub async fn finish_selection(app: AppHandle, window: WebviewWindow, rect: Rect)
 #[tauri::command]
 pub async fn finish_window(app: AppHandle, window: WebviewWindow, id: u32) -> Result<(), String> {
     let index = monitor_index(&window)?;
-    let session = end(&app).ok_or("no selection in progress")?;
+    let session = take_session(&app).ok_or("no selection in progress")?;
+    complete(&app, capture_picked_window(&app, session, index, id)).await
+}
+
+async fn capture_picked_window(app: &AppHandle, session: Session, index: usize, id: u32) -> Result<(), String> {
     let info = session.windows.iter().find(|info| info.id == id).cloned().ok_or("unknown window")?;
     let shot = session.monitors.into_iter().nth(index).ok_or("unknown monitor")?;
 
@@ -295,10 +358,10 @@ pub async fn finish_window(app: AppHandle, window: WebviewWindow, id: u32) -> Re
             let scale = shot.scale();
             let (x, y, width, height) =
                 crop_rect(local, scale, shot.image.width(), shot.image.height()).ok_or("the window is off screen")?;
-            (xcap::image::imageops::crop_imm(&shot.image, x, y, width, height).to_image(), scale)
+            (xcap::image::imageops::crop_imm(shot.image.as_ref(), x, y, width, height).to_image(), scale)
         }
     };
-    store(&app, image, scale).await
+    store(app, image, scale).await
 }
 
 fn capture_window(id: u32) -> Result<RgbaImage, String> {
@@ -316,19 +379,11 @@ async fn store(app: &AppHandle, image: RgbaImage, scale: f64) -> Result<(), Stri
     let id = uuid::Uuid::new_v4().to_string();
     let path = dir.join(format!("{id}.png"));
     let target = path.clone();
-    tauri::async_runtime::spawn_blocking(move || write_png(&target, &image))
+    tauri::async_runtime::spawn_blocking(move || images::write_png(&target, &image))
         .await
         .map_err(|error| error.to_string())??;
     capture::deliver(app, id, path, scale);
     Ok(())
-}
-
-/// Fast compression: captures are re-encoded on export anyway, so speed matters more here.
-fn write_png(path: &Path, image: &RgbaImage) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
-    png::PngEncoder::new_with_quality(std::io::BufWriter::new(file), png::CompressionType::Fast, png::FilterType::Adaptive)
-        .write_image(image.as_raw(), image.width(), image.height(), xcap::image::ExtendedColorType::Rgba8)
-        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

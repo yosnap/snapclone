@@ -16,7 +16,7 @@ import { bindControls } from "./controls";
 import { DocumentSaver } from "./document-saver";
 import { copyToClipboard, saveToFile } from "./export";
 import { HistoryView, type OpenedCapture, captureUrl } from "./history-view";
-import { applyStoredStyle, toStoredStyle } from "./persisted-style";
+import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
 import { loadSettings, saveSetting } from "./settings";
@@ -57,6 +57,11 @@ let detectingFor: string | null = null;
 const SEARCHING_MESSAGE = "Buscando datos sensibles…";
 let renderQueued = false;
 let exporting = false;
+/**
+ * The global defaults new captures start with. They only change when the user touches a
+ * control; opening a capture from the history shows its own style without touching them.
+ */
+const defaults: { style: StoredStyle; balance: boolean } = { style: toStoredStyle(style), balance: false };
 /** Redraws the sidebar from `style`; replaced once the controls are bound. */
 let refreshControls = () => {};
 
@@ -119,7 +124,7 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   await image.decode();
 
   // The previous capture's pending edits are built from the current state: save them first.
-  documentSaver.flush();
+  void documentSaver.flush();
   original = makeCapture(image, scale);
   capture = original;
   captureId = id;
@@ -131,13 +136,10 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   canvas.hidden = false;
   showStatus("");
   syncExportButtons();
-  if (saved) {
-    applyStoredStyle(style, saved.style);
-    refreshControls();
-    saveSetting("style", saved.style);
-    balanceToggle.checked = saved.balance;
-    saveSetting("balance", saved.balance);
-  }
+  // The document's own style, or the defaults for a new capture; neither is persisted here.
+  applyStoredStyle(style, saved?.style ?? defaults.style);
+  balanceToggle.checked = saved?.balance ?? defaults.balance;
+  refreshControls();
   if (balanceToggle.checked) applyBalance(true);
   if (saved) {
     // Saved annotations sit where the content was then; follow it if balancing moved it.
@@ -149,8 +151,15 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   scheduleRender();
 }
 
-function reopenCapture(opened: OpenedCapture): Promise<void> {
-  return loadCapture({ id: opened.id, scale: opened.scale }, parseCaptureDocument(opened.document));
+/**
+ * Reopens a capture from the history. The one already open is left alone, since the
+ * database may be behind its latest edits; any other waits until pending edits are stored.
+ */
+async function reopenCapture(id: string): Promise<void> {
+  if (id === captureId) return;
+  await documentSaver.flush();
+  const opened = await invoke<OpenedCapture>("open_history", { id });
+  await loadCapture({ id: opened.id, scale: opened.scale }, parseCaptureDocument(opened.document));
 }
 
 /** A capture deleted from the history while open leaves the editor empty. */
@@ -304,15 +313,19 @@ function startCapture(): void {
   invoke("start_capture").catch((error) => showStatus(`No se pudo capturar: ${error}`, true));
 }
 
+/** Every style control and preset goes through here: these are the user's choices. */
 function styleChanged(): void {
   scheduleRender();
-  saveSetting("style", toStoredStyle(style));
+  defaults.style = toStoredStyle(style);
+  saveSetting("style", defaults.style);
   scheduleDocumentSave();
 }
 
 /** Restores the last session's choices before wiring the controls, so they start in sync. */
 async function init(): Promise<void> {
   const settings = await loadSettings();
+  defaults.style = settings.style;
+  defaults.balance = settings.balance;
   applyStoredStyle(style, settings.style);
   Object.assign(redactSettings, settings.redact);
   editor.setColor(settings.annotationColor);
@@ -331,6 +344,7 @@ async function init(): Promise<void> {
   bindRedactControls(sidebar.querySelector<HTMLElement>("#redact-options")!, redactSettings, toggleRedaction);
   balanceToggle.checked = settings.balance;
   balanceToggle.addEventListener("change", () => {
+    defaults.balance = balanceToggle.checked;
     saveSetting("balance", balanceToggle.checked);
     applyBalance(balanceToggle.checked);
   });
@@ -384,6 +398,10 @@ if (!outsideTauri) {
   listen<CaptureReady>("capture-ready", (event) => {
     historyView.close();
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
+  });
+  listen<string>("capture-failed", (event) => {
+    historyView.close();
+    showStatus(`No se pudo hacer la captura: ${event.payload}`, true);
   });
 }
 

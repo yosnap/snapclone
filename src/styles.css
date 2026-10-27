@@ -369,6 +369,10 @@ button kbd {
   list-style: none;
 }
 
+.history-more {
+  margin: 0 16px 16px;
+}
+
 .history-item {
   display: flex;
   flex-direction: column;

@@ -11,11 +11,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::capture;
+use crate::{capture, images};
 
 const DATABASE_FILE: &str = "history.sqlite3";
-/// Recent captures listed in the history view.
-const LIST_LIMIT: i64 = 100;
+/// Captures per page of the history view; older pages load on demand, so every capture
+/// can be reached and deleted.
+const PAGE_SIZE: u32 = 60;
 /// Documents are small JSON; anything far larger is a bug or abuse, not a real edit.
 const DOCUMENT_MAX_BYTES: usize = 2 * 1024 * 1024;
 
@@ -65,14 +66,23 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE IF NOT EXISTS captures (
      );
      CREATE INDEX IF NOT EXISTS captures_by_date ON captures (created_at DESC);"];
 
-/// Applies the steps newer than `user_version`, each in its own transaction together with
-/// the version bump, so running it on every start is safe.
+/// Applies the steps newer than `user_version`, so running it on every start is safe.
 pub fn migrate(connection: &Connection) -> rusqlite::Result<()> {
+    apply_migrations(connection, MIGRATIONS)
+}
+
+/// Each step runs in a transaction together with its version bump; a failing step rolls
+/// back on drop and leaves the database at the previous version.
+fn apply_migrations(connection: &Connection, steps: &[&str]) -> rusqlite::Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     // Steps are idempotent, so an unexpected negative version just replays them.
     let applied = usize::try_from(version).unwrap_or(0);
-    for (index, step) in MIGRATIONS.iter().enumerate().skip(applied) {
-        connection.execute_batch(&format!("BEGIN; {step} PRAGMA user_version = {}; COMMIT;", index + 1))?;
+    for (index, step) in steps.iter().enumerate().skip(applied) {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(step)?;
+        let next = i64::try_from(index + 1).expect("migration count fits in i64");
+        transaction.pragma_update(None, "user_version", next)?;
+        transaction.commit()?;
     }
     Ok(())
 }
@@ -107,11 +117,19 @@ pub fn set_document(connection: &Connection, id: &str, document: &str) -> rusqli
     Ok(changed > 0)
 }
 
-/// Newest first.
-pub fn list(connection: &Connection, limit: i64) -> rusqlite::Result<Vec<HistoryItem>> {
-    let mut statement =
-        connection.prepare("SELECT id, created_at, scale FROM captures ORDER BY created_at DESC, rowid DESC LIMIT ?1")?;
-    let rows = statement.query_map([limit], |row| {
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    items: Vec<HistoryItem>,
+    has_more: bool,
+}
+
+/// Newest first, `limit` items after skipping `offset`.
+pub fn list(connection: &Connection, offset: u32, limit: u32) -> rusqlite::Result<Vec<HistoryItem>> {
+    let mut statement = connection.prepare(
+        "SELECT id, created_at, scale FROM captures ORDER BY created_at DESC, rowid DESC LIMIT ?1 OFFSET ?2",
+    )?;
+    let rows = statement.query_map([limit, offset], |row| {
         Ok(HistoryItem { id: row.get(0)?, created_at: row.get(1)?, scale: row.get(2)? })
     })?;
     rows.collect()
@@ -164,9 +182,18 @@ pub struct OpenedCapture {
     document: Option<serde_json::Value>,
 }
 
+/// `offset` is how many entries the view already shows; one extra row tells whether
+/// there is another page.
+pub fn page(connection: &Connection, offset: u32) -> rusqlite::Result<HistoryPage> {
+    let mut items = list(connection, offset, PAGE_SIZE + 1)?;
+    let has_more = items.len() > PAGE_SIZE as usize;
+    items.truncate(PAGE_SIZE as usize);
+    Ok(HistoryPage { items, has_more })
+}
+
 #[tauri::command]
-pub fn list_history(history: State<'_, History>) -> Result<Vec<HistoryItem>, String> {
-    list(&history.connection(), LIST_LIMIT).map_err(|error| error.to_string())
+pub fn list_history(history: State<'_, History>, offset: u32) -> Result<HistoryPage, String> {
+    page(&history.connection(), offset).map_err(|error| error.to_string())
 }
 
 /// Stores the editing state of a capture. Taking a `Value` makes IPC reject anything that is
@@ -199,11 +226,12 @@ pub fn open_history(history: State<'_, History>, id: String) -> Result<OpenedCap
 pub fn delete_history(app: AppHandle, history: State<'_, History>, id: String) -> Result<(), String> {
     let path = delete(&history.connection(), &id).map_err(|error| error.to_string())?;
     capture::forget(&app, &id);
-    if let Some(path) = path {
-        match std::fs::remove_file(&path) {
+    let Some(path) = path else { return Ok(()) };
+    for file in [images::thumbnail_path(&path), path] {
+        match std::fs::remove_file(&file) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("the entry was removed but its image was not: {error}")),
+            Err(error) => return Err(format!("the entry was removed but its files were not: {error}")),
         }
     }
     Ok(())
@@ -226,7 +254,7 @@ mod tests {
         migrate(&connection).unwrap();
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(list(&connection, 10).unwrap().len(), 1, "re-running keeps existing rows");
+        assert_eq!(list(&connection, 0, 10).unwrap().len(), 1, "re-running keeps existing rows");
     }
 
     #[test]
@@ -235,8 +263,41 @@ mod tests {
         for (id, at) in [("old", 10), ("new", 30), ("mid", 20)] {
             insert(&connection, id, at, Path::new("/tmp/x.png"), 1.0).unwrap();
         }
-        let ids: Vec<String> = list(&connection, 2).unwrap().into_iter().map(|item| item.id).collect();
+        let ids: Vec<String> = list(&connection, 0, 2).unwrap().into_iter().map(|item| item.id).collect();
         assert_eq!(ids, ["new", "mid"]);
+        let ids: Vec<String> = list(&connection, 2, 2).unwrap().into_iter().map(|item| item.id).collect();
+        assert_eq!(ids, ["old"]);
+    }
+
+    #[test]
+    fn pages_reach_every_capture() {
+        let connection = database();
+        let total = PAGE_SIZE + 5;
+        for index in 0..total {
+            insert(&connection, &format!("c{index}"), i64::from(index), Path::new("/tmp/x.png"), 1.0).unwrap();
+        }
+        let first = page(&connection, 0).unwrap();
+        assert_eq!(first.items.len(), PAGE_SIZE as usize);
+        assert!(first.has_more);
+        let second = page(&connection, PAGE_SIZE).unwrap();
+        assert_eq!(second.items.len(), 5);
+        assert!(!second.has_more);
+        assert_eq!(second.items.last().unwrap().id, "c0", "the oldest capture is reachable");
+    }
+
+    #[test]
+    fn failed_migration_step_rolls_back() {
+        let connection = Connection::open_in_memory().unwrap();
+        let steps = ["CREATE TABLE good (id INTEGER);", "CREATE TABLE half (id INTEGER); NOT VALID SQL;"];
+        assert!(apply_migrations(&connection, &steps).is_err());
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 1, "the first step stays applied");
+        let half: i64 = connection
+            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'half'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(half, 0, "the failed step left nothing behind");
+        assert!(connection.is_autocommit(), "no transaction is left open");
+        apply_migrations(&connection, &["CREATE TABLE good (id INTEGER);", "CREATE TABLE half (id INTEGER);"]).unwrap();
     }
 
     #[test]

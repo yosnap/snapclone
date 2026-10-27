@@ -10,13 +10,16 @@ use std::{
 use serde::Serialize;
 use tauri::{http, AppHandle, Emitter, Manager};
 
-use crate::{history, selector};
+use crate::{history, images, selector};
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
 const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
 
 pub const EDITOR_WINDOW: &str = "main";
 const READY_EVENT: &str = "capture-ready";
+const FAILED_EVENT: &str = "capture-failed";
+/// `capture://localhost/thumbnail/<id>` serves the small preview of a capture.
+const THUMBNAIL_PREFIX: &str = "thumbnail/";
 
 /// Captured files by id, served to the editor through the `capture://` scheme.
 #[derive(Default)]
@@ -83,15 +86,27 @@ async fn capture_region(app: AppHandle) {
         Ok(dir) => run_screencapture(&dir).await,
         Err(error) => Err(error),
     };
-    captures.in_progress.store(false, Ordering::SeqCst);
-
     match result {
         Ok(Some((id, path))) => {
             let scale = std::fs::read(&path).map_or(1.0, |bytes| png_scale(&bytes));
             deliver(&app, id, path, scale);
         }
         Ok(None) => {}
-        Err(error) => eprintln!("capture failed: {error}"),
+        Err(error) => report_failure(&app, &error),
+    }
+    captures.in_progress.store(false, Ordering::SeqCst);
+}
+
+/// Brings the editor back with the error in its status line, so a failed capture is never
+/// lost silently behind a hidden window.
+pub fn report_failure(app: &AppHandle, error: &str) {
+    eprintln!("capture failed: {error}");
+    if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    if let Err(emit_error) = app.emit_to(EDITOR_WINDOW, FAILED_EVENT, error) {
+        eprintln!("capture-failed emit failed: {emit_error}");
     }
 }
 
@@ -103,6 +118,13 @@ pub fn selection_ended(app: &AppHandle) {
 /// Registers a finished capture, stores it in the history and hands it to the editor.
 pub fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
     history::record(app, &id, &path, scale);
+    // The history view only needs it later, so it never delays showing the capture.
+    let source = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = images::write_thumbnail(&source) {
+            eprintln!("thumbnail could not be written: {error}");
+        }
+    });
     app.state::<Captures>().files.lock().unwrap().insert(id.clone(), path);
     if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
         let _ = window.show();
@@ -171,14 +193,28 @@ fn png_scale(png: &[u8]) -> f64 {
 
 /// Serves `capture://localhost/<id>` with CORS so the editor canvas stays exportable.
 pub fn serve(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
-    let id = request.uri().path().trim_start_matches('/');
-    let path = path_of(app, id);
+    let requested = request.uri().path().trim_start_matches('/');
+    let path = match requested.strip_prefix(THUMBNAIL_PREFIX) {
+        Some(id) => path_of(app, id).map(|path| thumbnail_or_capture(&path)),
+        None => path_of(app, requested),
+    };
     let response = http::Response::builder().header("Access-Control-Allow-Origin", "*");
     match path.and_then(|path| std::fs::read(path).ok()) {
         Some(bytes) => response.header("Content-Type", "image/png").body(bytes),
         None => response.status(404).body(Vec::new()),
     }
     .expect("static response parts are valid")
+}
+
+/// Captures from before thumbnails existed get one on first request; if that fails the
+/// full image is served so the history still shows something.
+fn thumbnail_or_capture(capture: &Path) -> PathBuf {
+    let thumbnail = images::thumbnail_path(capture);
+    if thumbnail.exists() || images::write_thumbnail(capture).is_ok() {
+        thumbnail
+    } else {
+        capture.to_path_buf()
+    }
 }
 
 #[cfg(test)]

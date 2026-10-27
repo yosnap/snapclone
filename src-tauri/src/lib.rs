@@ -1,6 +1,7 @@
 mod capture;
 mod export;
 mod history;
+mod images;
 mod redact;
 mod selector;
 mod tray;

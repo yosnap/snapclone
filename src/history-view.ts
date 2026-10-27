@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type HistoryItem = { id: string; createdAt: number; scale: number };
+type HistoryPage = { items: HistoryItem[]; hasMore: boolean };
 export type OpenedCapture = { id: string; scale: number; document: unknown };
 
 /** Captures are served by Rust under this scheme, with CORS so canvases stay exportable. */
@@ -8,10 +9,16 @@ export function captureUrl(id: string): string {
   return `capture://localhost/${encodeURIComponent(id)}`;
 }
 
+/** Small preview written next to each capture, so the grid never decodes full screenshots. */
+function thumbnailUrl(id: string): string {
+  return `capture://localhost/thumbnail/${encodeURIComponent(id)}`;
+}
+
 const DATE_FORMAT = new Intl.DateTimeFormat("es-ES", { dateStyle: "medium", timeStyle: "short" });
 
 type HistoryHandlers = {
-  open: (capture: OpenedCapture) => Promise<void>;
+  /** Loads the capture into the editor; rejects with a message when it cannot. */
+  open: (id: string) => Promise<void>;
   /** Lets the editor clear itself when the capture it shows is deleted. */
   deleted: (id: string) => void;
   notify: (message: string, isError?: boolean) => void;
@@ -25,10 +32,12 @@ export class HistoryView {
   private readonly root = document.querySelector<HTMLElement>("#history")!;
   private readonly list = document.querySelector<HTMLUListElement>("#history-list")!;
   private readonly empty = document.querySelector<HTMLElement>("#history-empty")!;
+  private readonly more = document.querySelector<HTMLButtonElement>("#history-more")!;
   private returnFocus: HTMLElement | null = null;
 
   constructor(private readonly handlers: HistoryHandlers) {
     document.querySelector<HTMLButtonElement>("#history-close")!.addEventListener("click", () => this.close());
+    this.more.addEventListener("click", () => this.loadMore());
     this.root.addEventListener("click", (event) => {
       if (event.target === this.root) this.close();
     });
@@ -47,18 +56,26 @@ export class HistoryView {
   }
 
   async show(): Promise<void> {
-    let items: HistoryItem[];
-    try {
-      items = await invoke<HistoryItem[]>("list_history");
-    } catch (error) {
-      this.handlers.notify(`No se pudo leer el historial: ${error}`, true);
-      return;
-    }
-    this.list.replaceChildren(...items.map((item) => this.entry(item)));
-    this.empty.hidden = items.length > 0;
+    this.list.replaceChildren();
+    if (!(await this.loadMore())) return;
     this.returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.root.hidden = false;
     document.querySelector<HTMLButtonElement>("#history-close")!.focus();
+  }
+
+  /** Appends the next page; the offset is what is shown, so deletions never skip entries. */
+  private async loadMore(): Promise<boolean> {
+    let page: HistoryPage;
+    try {
+      page = await invoke<HistoryPage>("list_history", { offset: this.list.childElementCount });
+    } catch (error) {
+      this.handlers.notify(`No se pudo leer el historial: ${error}`, true);
+      return false;
+    }
+    this.list.append(...page.items.map((item) => this.entry(item)));
+    this.empty.hidden = this.list.childElementCount > 0;
+    this.more.hidden = !page.hasMore;
+    return true;
   }
 
   close(): void {
@@ -81,7 +98,7 @@ export class HistoryView {
     thumbnail.loading = "lazy";
     thumbnail.decoding = "async";
     thumbnail.alt = "";
-    thumbnail.src = captureUrl(item.id);
+    thumbnail.src = thumbnailUrl(item.id);
     const label = document.createElement("span");
     label.textContent = date;
     open.append(thumbnail, label);
@@ -99,10 +116,9 @@ export class HistoryView {
   }
 
   private async open(id: string): Promise<void> {
+    this.close();
     try {
-      const capture = await invoke<OpenedCapture>("open_history", { id });
-      this.close();
-      await this.handlers.open(capture);
+      await this.handlers.open(id);
     } catch (error) {
       this.handlers.notify(`No se pudo abrir la captura: ${error}`, true);
     }
