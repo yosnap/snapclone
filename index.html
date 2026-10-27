@@ -27,7 +27,7 @@
         </div>
         <div class="canvas-area">
           <div id="empty-state" class="empty-state">
-            <p>Pulsa <kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd> o usa el icono de la barra de menús.</p>
+            <p>Usa un atajo de captura (<kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd> por defecto) o el icono de la barra de menús.</p>
             <button type="button" data-action="capture">Capturar región</button>
           </div>
           <canvas id="editor-canvas" hidden></canvas>
@@ -126,8 +126,13 @@
               Ocultar icono del Dock
             </label>
             <p class="settings-hint">Snapclone seguirá en la barra de menús.</p>
-            <p id="settings-status" class="status" role="status"></p>
           </section>
+          <section class="settings-section">
+            <h3>Atajos de captura</h3>
+            <p class="settings-hint">Haz clic en un atajo y pulsa la nueva combinación. <kbd>Esc</kbd> cancela.</p>
+            <ul id="shortcut-list" class="shortcut-list"></ul>
+          </section>
+          <p id="settings-status" class="status" role="status"></p>
         </div>
       </div>
     </div>

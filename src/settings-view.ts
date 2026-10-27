@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { ShortcutSettings } from "./shortcut-settings";
 
 /**
  * In-window settings overlay. These settings belong to the app rather than the editor, so
@@ -8,6 +9,7 @@ export class SettingsView {
   private readonly root = document.querySelector<HTMLElement>("#settings")!;
   private readonly dockHidden = document.querySelector<HTMLInputElement>("#dock-hidden")!;
   private readonly status = document.querySelector<HTMLElement>("#settings-status")!;
+  private readonly shortcuts = new ShortcutSettings(document.querySelector<HTMLUListElement>("#shortcut-list")!);
   private returnFocus: HTMLElement | null = null;
 
   constructor() {
@@ -34,7 +36,8 @@ export class SettingsView {
     if (this.isOpen) return;
     this.showStatus("");
     try {
-      this.dockHidden.checked = await invoke<boolean>("get_dock_hidden");
+      const [dockHidden] = await Promise.all([invoke<boolean>("get_dock_hidden"), this.shortcuts.load()]);
+      this.dockHidden.checked = dockHidden;
     } catch (error) {
       this.showStatus(`No se pudieron leer los ajustes: ${error}`, true);
     }
@@ -45,6 +48,7 @@ export class SettingsView {
 
   close(): void {
     if (this.root.hidden) return;
+    this.shortcuts.stop();
     this.root.hidden = true;
     this.returnFocus?.focus();
   }

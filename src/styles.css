@@ -437,6 +437,41 @@ button.history-open:focus-visible {
   font-size: 0.9em;
 }
 
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: 1fr 180px auto;
+  align-items: center;
+  gap: 8px;
+}
+
+button.shortcut-recorder {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+button.shortcut-recorder[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.shortcut-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--error);
+  font-size: 0.9em;
+}
+
 [hidden] {
   display: none !important;
 }

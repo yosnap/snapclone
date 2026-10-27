@@ -7,10 +7,11 @@ use std::{
     },
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{http, AppHandle, Emitter, Manager};
+use xcap::image::RgbaImage;
 
-use crate::{editor_window, history, images, selector};
+use crate::{editor_window, history, images, screen, selector};
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
 const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
@@ -35,6 +36,83 @@ struct CaptureReady {
     scale: f64,
 }
 
+/// What a capture shortcut or menu entry takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureKind {
+    /// A dragged zone in the own selector.
+    Region,
+    /// The selector, starting in window mode.
+    Window,
+    /// The monitor under the pointer, without any selector.
+    Screen,
+    /// A zone captured repeatedly while the user scrolls, stitched into one tall image.
+    Scroll,
+}
+
+impl CaptureKind {
+    pub const ALL: [Self; 4] = [Self::Region, Self::Window, Self::Screen, Self::Scroll];
+
+    /// Name in the settings file and in menu ids.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Region => "region",
+            Self::Window => "window",
+            Self::Screen => "screen",
+            Self::Scroll => "scroll",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.id() == id)
+    }
+
+    /// As the user reads it in messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Region => "Zona",
+            Self::Window => "Ventana",
+            Self::Screen => "Pantalla completa",
+            Self::Scroll => "Con scroll",
+        }
+    }
+
+    /// Arguments for `screencapture` when the own capture is unavailable.
+    fn fallback_args(self) -> &'static [&'static str] {
+        // -x: no sound; -o: no window shadow, the editor draws its own.
+        match self {
+            Self::Window => &["-i", "-W", "-x", "-o"],
+            Self::Screen => &["-x", "-o"],
+            Self::Region | Self::Scroll => &["-i", "-x", "-o"],
+        }
+    }
+}
+
+/// Without Screen Recording permission CoreGraphics still "succeeds" but returns only the
+/// wallpaper, so the permission is checked up front. When it is missing, macOS is asked to
+/// prompt for it and the caller falls back to `screencapture`, which handles its own prompt.
+#[cfg(target_os = "macos")]
+pub fn screen_capture_allowed() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+    // SAFETY: both functions take no arguments and only query or prompt for the permission.
+    unsafe {
+        if CGPreflightScreenCaptureAccess() {
+            return true;
+        }
+        CGRequestScreenCaptureAccess();
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn screen_capture_allowed() -> bool {
+    true
+}
+
 /// Path of a capture taken in this session or stored in the history, if the id is known.
 /// Paths only ever come from Rust, never from the webview.
 pub fn path_of(app: &AppHandle, id: &str) -> Option<PathBuf> {
@@ -47,17 +125,18 @@ pub fn forget(app: &AppHandle, id: &str) {
     app.state::<Captures>().files.lock().unwrap().remove(id);
 }
 
-/// Starts a region capture in the background; ignored while another one is running.
-pub fn start(app: AppHandle) {
-    tauri::async_runtime::spawn(capture_region(app));
+/// Starts a capture in the background; ignored while another one is running.
+pub fn start(app: AppHandle, kind: CaptureKind) {
+    tauri::async_runtime::spawn(run_capture(app, kind));
 }
 
+/// The editor's capture buttons take a zone unless they say otherwise.
 #[tauri::command]
-pub fn start_capture(app: AppHandle) {
-    start(app);
+pub fn start_capture(app: AppHandle, kind: Option<CaptureKind>) {
+    start(app, kind.unwrap_or(CaptureKind::Region));
 }
 
-async fn capture_region(app: AppHandle) {
+async fn run_capture(app: AppHandle, kind: CaptureKind) {
     let captures = app.state::<Captures>();
     if captures.in_progress.swap(true, Ordering::SeqCst) {
         return;
@@ -71,19 +150,34 @@ async fn capture_region(app: AppHandle) {
     }
 
     // The own selector keeps `in_progress` set until the selection ends; see `selection_ended`.
-    let opened = tauri::async_runtime::spawn_blocking({
+    let own = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
-        move || selector::open(&app)
+        move || match kind {
+            CaptureKind::Screen => screen::capture().map(Some),
+            _ => selector::open(&app, kind).map(|()| None),
+        }
     })
     .await
     .unwrap_or_else(|error| Err(error.to_string()));
-    match opened {
-        Ok(()) => return,
-        Err(error) => eprintln!("own selector unavailable, using screencapture -i: {error}"),
+    match own {
+        Ok(None) => return,
+        Ok(Some((image, scale))) => {
+            if let Err(error) = store_image(&app, image, scale).await {
+                report_failure(&app, &error);
+            }
+            captures.in_progress.store(false, Ordering::SeqCst);
+            return;
+        }
+        Err(error) if kind == CaptureKind::Scroll => {
+            report_failure(&app, &format!("La captura con scroll necesita el permiso de Grabación de pantalla ({error})"));
+            captures.in_progress.store(false, Ordering::SeqCst);
+            return;
+        }
+        Err(error) => eprintln!("own capture unavailable, using screencapture: {error}"),
     }
 
     let result = match capture_dir(&app) {
-        Ok(dir) => run_screencapture(&dir).await,
+        Ok(dir) => run_screencapture(&dir, kind.fallback_args()).await,
         Err(error) => Err(error),
     };
     match result {
@@ -141,14 +235,26 @@ pub fn capture_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Runs the native interactive selector, the fallback when the own one cannot capture the
-/// screens. Returns `None` when the user cancels with Esc.
-async fn run_screencapture(dir: &Path) -> Result<Option<(String, PathBuf)>, String> {
+/// Encodes off the async runtime and hands the file to the normal capture flow.
+pub async fn store_image(app: &AppHandle, image: RgbaImage, scale: f64) -> Result<(), String> {
+    let dir = capture_dir(app)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let path = dir.join(format!("{id}.png"));
+    let target = path.clone();
+    tauri::async_runtime::spawn_blocking(move || images::write_png(&target, &image))
+        .await
+        .map_err(|error| error.to_string())??;
+    deliver(app, id, path, scale);
+    Ok(())
+}
+
+/// Runs the system capture tool, the fallback when the own capture cannot read the screens.
+/// Returns `None` when the user cancels with Esc.
+async fn run_screencapture(dir: &Path, args: &[&str]) -> Result<Option<(String, PathBuf)>, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let path = dir.join(format!("{id}.png"));
     let status = tokio::process::Command::new("/usr/sbin/screencapture")
-        // -o drops the macOS window shadow; the editor draws its own.
-        .args(["-i", "-x", "-o"])
+        .args(args)
         .arg(&path)
         .status()
         .await

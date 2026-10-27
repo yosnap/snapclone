@@ -6,27 +6,28 @@ mod history;
 mod images;
 mod prefs;
 mod redact;
+mod screen;
 mod selector;
+mod shortcuts;
 mod tray;
 
 use tauri::{Manager, RunEvent, WindowEvent};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let capture_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit2);
-
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(capture::Captures::default())
         .manage(export::PendingSave::default())
         .manage(selector::Selection::default())
+        .manage(shortcuts::Shortcuts::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, shortcut, event| {
-                    if event.state() == ShortcutState::Pressed && shortcut == &capture_shortcut {
-                        capture::start(app.clone());
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        shortcuts::on_shortcut(app, shortcut);
                     }
                 })
                 .build(),
@@ -44,6 +45,8 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            // A shortcut recorder left open never keeps the global shortcuts paused.
+            WindowEvent::Focused(false) if window.label() == capture::EDITOR_WINDOW => shortcuts::resume(window.app_handle()),
             WindowEvent::Destroyed => selector::on_window_destroyed(window.app_handle(), window.label()),
             _ => {}
         })
@@ -63,15 +66,18 @@ pub fn run() {
             selector::finish_selection,
             selector::finish_window,
             editor_window::get_dock_hidden,
-            editor_window::set_dock_hidden
+            editor_window::set_dock_hidden,
+            shortcuts::get_shortcuts,
+            shortcuts::set_shortcut,
+            shortcuts::pause_shortcuts
         ])
-        .setup(move |app| {
+        .setup(|app| {
             app.manage(history::History::open(app.handle()));
             #[cfg(target_os = "macos")]
             app.set_activation_policy(editor_window::activation_policy(editor_window::dock_hidden(app.handle())));
-            tray::build(app.handle())?;
+            let registered = shortcuts::init(app.handle());
+            tray::build(app.handle(), &registered)?;
             tray::add_settings_to_app_menu(app.handle())?;
-            app.global_shortcut().register(capture_shortcut)?;
             editor_window::show(app.handle(), true);
             Ok(())
         })
