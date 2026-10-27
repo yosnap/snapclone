@@ -1,7 +1,8 @@
 //! Joins the frames of a scroll capture into one tall image. Each frame is reduced to a
 //! signature (grey level averages over a few column blocks, one row each); the vertical
 //! offset that best lines up the new frame's rows with the previous frame's is found by the
-//! mean absolute difference, so noise and slight rendering changes are tolerated.
+//! mean absolute difference, so noise and slight rendering changes are tolerated. Only rows
+//! with content count: blank rows line up at any offset, so they never decide one.
 
 use xcap::image::RgbaImage;
 
@@ -13,16 +14,31 @@ const COLUMNS: usize = 32;
 const UNCHANGED_TOLERANCE: f64 = 2.0;
 /// Mean grey level difference over the overlap under which an offset is trusted.
 const MATCH_TOLERANCE: f64 = 10.0;
+/// A cost this low is taken at once, without looking at the remaining offsets.
+const RELIABLE_COST: f64 = 3.0;
+/// Offsets whose costs differ by less than this are a tie; the one resting on more content
+/// rows wins, so a small overlap never beats the real one by luck.
+const TIE_TOLERANCE: f64 = 0.5;
 /// Fewest overlapping rows a match may rest on, and the share of the frame height they must
 /// cover at least, so a few similar rows never decide the offset alone.
 const MIN_OVERLAP_ROWS: usize = 16;
 const MIN_OVERLAP_DIVISOR: usize = 8;
+/// Fewest rows with content an overlap needs before its cost means anything.
+const MIN_CONTENT_ROWS: usize = 8;
+/// A row has content when its blocks, or the row and the one above it, differ by more than
+/// this many grey levels; noise on a blank background stays well below it.
+const CONTENT_RANGE: u8 = 8;
+/// Offsets tried first on each side of the previous one: scrolling speed rarely jumps.
+const HINT_WINDOW: usize = 24;
+/// Signature values compared per frame at most, so a hard frame costs bounded time.
+const WORK_LIMIT: usize = 4_000_000;
 
-/// One row of block averages per frame row.
+/// One row of block averages per frame row, plus which rows have content.
 pub struct Signature {
     columns: usize,
     rows: usize,
     values: Vec<u8>,
+    content: Vec<bool>,
 }
 
 impl Signature {
@@ -35,17 +51,34 @@ pub fn signature(image: &RgbaImage) -> Signature {
     let (width, rows) = (image.width() as usize, image.height() as usize);
     let columns = COLUMNS.min(width.max(1));
     let mut values = Vec::with_capacity(columns * rows);
-    for (_, row) in image.enumerate_rows() {
-        let luma: Vec<u32> = row
-            .map(|(_, _, pixel)| (u32::from(pixel[0]) * 77 + u32::from(pixel[1]) * 150 + u32::from(pixel[2]) * 29) >> 8)
-            .collect();
-        for column in 0..columns {
-            // `columns` never exceeds the width, so every block has at least one pixel.
-            let block = &luma[column * width / columns..(column + 1) * width / columns];
-            values.push((block.iter().sum::<u32>() / block.len().max(1) as u32) as u8);
+    // Reused for every row; `columns` never exceeds the width, so no block is empty.
+    let mut sums = vec![0u32; columns];
+    let bounds: Vec<usize> = (0..=columns).map(|column| column * width / columns).collect();
+    for row in image.as_raw().chunks_exact(width * 4).take(rows) {
+        sums.fill(0);
+        let mut column = 0;
+        for (x, pixel) in row.as_chunks::<4>().0.iter().enumerate() {
+            while x >= bounds[column + 1] {
+                column += 1;
+            }
+            sums[column] += (u32::from(pixel[0]) * 77 + u32::from(pixel[1]) * 150 + u32::from(pixel[2]) * 29) >> 8;
         }
+        values.extend(sums.iter().enumerate().map(|(column, sum)| (sum / (bounds[column + 1] - bounds[column]).max(1) as u32) as u8));
     }
-    Signature { columns, rows, values }
+    let content = (0..rows)
+        .map(|index| {
+            let row = &values[index * columns..(index + 1) * columns];
+            let (low, high) = row.iter().fold((u8::MAX, u8::MIN), |(low, high), value| (low.min(*value), high.max(*value)));
+            let varied = high - low > CONTENT_RANGE;
+            let edge = index > 0 && {
+                let above = &values[(index - 1) * columns..index * columns];
+                let total: u32 = row.iter().zip(above).map(|(a, b)| u32::from(a.abs_diff(*b))).sum();
+                total > u32::from(CONTENT_RANGE) * columns as u32
+            };
+            varied || edge
+        })
+        .collect();
+    Signature { columns, rows, values, content }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -58,41 +91,85 @@ pub enum Match {
     NotFound,
 }
 
+/// Mean difference over every row: is the frame the same as before?
+fn unchanged(previous: &Signature, next: &Signature) -> bool {
+    let budget = (UNCHANGED_TOLERANCE * previous.values.len() as f64) as u64;
+    let total: u64 = previous.values.iter().zip(&next.values).map(|(a, b)| u64::from(a.abs_diff(*b))).sum();
+    total <= budget
+}
+
 /// Mean difference between `previous` rows from `offset` on and `next` rows from the top,
-/// or `None` once it is clearly above `limit` (checked as it goes, to skip hopeless offsets).
-fn overlap_cost(previous: &Signature, next: &Signature, offset: usize, limit: f64) -> Option<f64> {
+/// over the rows where either side has content. `None` when too few rows have content, or
+/// once the cost is clearly above `limit` (checked as it goes, to skip hopeless offsets).
+/// `work` counts the values compared.
+fn overlap_cost(previous: &Signature, next: &Signature, offset: usize, limit: f64, work: &mut usize) -> Option<(f64, usize)> {
     let overlap = previous.rows - offset;
-    let samples = (overlap * previous.columns) as f64;
-    let budget = (limit * samples) as u64;
+    let counted = |row: usize| previous.content[row + offset] || next.content[row];
+    let content_rows = (0..overlap).filter(|row| counted(*row)).count();
+    if content_rows < MIN_CONTENT_ROWS {
+        return None;
+    }
+    let samples = content_rows * previous.columns;
+    let budget = (limit * samples as f64) as u64;
     let mut total = 0u64;
-    for row in 0..overlap {
+    for row in (0..overlap).filter(|row| counted(*row)) {
+        *work += previous.columns;
         total += previous.row(row + offset).iter().zip(next.row(row)).map(|(a, b)| u64::from(a.abs_diff(*b))).sum::<u64>();
         if total > budget {
             return None;
         }
     }
-    Some(total as f64 / samples)
+    Some((total as f64 / samples as f64, content_rows))
 }
 
-/// Finds how far the content scrolled down between two frames of the same zone.
-pub fn find_offset(previous: &Signature, next: &Signature) -> Match {
+/// Finds how far the content scrolled down between two frames of the same zone. Offsets
+/// near `hint` (the previous one) are tried first; a reliable match there ends the search.
+pub fn find_offset(previous: &Signature, next: &Signature, hint: Option<usize>) -> Match {
     if previous.rows != next.rows || previous.columns != next.columns || previous.rows < 2 {
         return Match::NotFound;
     }
-    if overlap_cost(previous, next, 0, UNCHANGED_TOLERANCE).is_some() {
+    if unchanged(previous, next) {
         return Match::Unchanged;
     }
     let min_overlap = (previous.rows / MIN_OVERLAP_DIVISOR).max(MIN_OVERLAP_ROWS).min(previous.rows - 1);
-    let mut best: Option<(usize, f64)> = None;
-    for offset in 1..=previous.rows - min_overlap {
-        let limit = best.map_or(MATCH_TOLERANCE, |(_, cost)| cost);
-        if let Some(cost) = overlap_cost(previous, next, offset, limit)
-            && best.is_none_or(|(_, best_cost)| cost < best_cost)
-        {
-            best = Some((offset, cost));
+    let last = previous.rows - min_overlap;
+    // Empty without a hint: the start is past the end.
+    let near = hint.map_or(last + 1..=last, |hint| hint.saturating_sub(HINT_WINDOW).max(1)..=(hint + HINT_WINDOW).min(last));
+    let rest = (1..=last).filter(|offset| !near.contains(offset));
+
+    let mut search = Search::default();
+    for offset in near.clone() {
+        search.try_offset(previous, next, offset);
+    }
+    if search.best.is_none_or(|(_, cost, _)| cost > RELIABLE_COST) {
+        for offset in rest {
+            if search.work > WORK_LIMIT {
+                break;
+            }
+            search.try_offset(previous, next, offset);
         }
     }
-    best.map_or(Match::NotFound, |(offset, _)| Match::Offset(offset))
+    search.best.map_or(Match::NotFound, |(offset, _, _)| Match::Offset(offset))
+}
+
+/// The best offset so far as (offset, cost, content rows), and the values compared.
+#[derive(Default)]
+struct Search {
+    best: Option<(usize, f64, usize)>,
+    work: usize,
+}
+
+impl Search {
+    fn try_offset(&mut self, previous: &Signature, next: &Signature, offset: usize) {
+        let limit = self.best.map_or(MATCH_TOLERANCE, |(_, cost, _)| (cost + TIE_TOLERANCE).min(MATCH_TOLERANCE));
+        let Some((cost, rows)) = overlap_cost(previous, next, offset, limit, &mut self.work) else { return };
+        let better = self.best.is_none_or(|(_, best_cost, best_rows)| {
+            cost < best_cost - TIE_TOLERANCE || (cost < best_cost + TIE_TOLERANCE && rows > best_rows)
+        });
+        if better {
+            self.best = Some((offset, cost, rows));
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -114,6 +191,8 @@ pub struct Stitcher {
     height: u32,
     pixels: Vec<u8>,
     last: Signature,
+    /// Offset of the last frame added, where the next one is looked for first.
+    last_offset: Option<usize>,
     full: bool,
 }
 
@@ -126,7 +205,7 @@ impl Stitcher {
         let height = first.height().min(max_height);
         let row_bytes = first.width() as usize * 4;
         let pixels = first.as_raw()[..row_bytes * height as usize].to_vec();
-        Self { width: first.width(), max_height, height, pixels, last: signature(first), full: height >= max_height }
+        Self { width: first.width(), max_height, height, pixels, last: signature(first), last_offset: None, full: height >= max_height }
     }
 
     pub fn height(&self) -> u32 {
@@ -141,7 +220,7 @@ impl Stitcher {
             return Outcome::NoOverlap;
         }
         let next = signature(frame);
-        let offset = match find_offset(&self.last, &next) {
+        let offset = match find_offset(&self.last, &next, self.last_offset) {
             Match::Unchanged => return Outcome::Unchanged,
             Match::NotFound => return Outcome::NoOverlap,
             Match::Offset(offset) => offset as u32,
@@ -152,6 +231,7 @@ impl Stitcher {
         self.pixels.extend_from_slice(&frame.as_raw()[start..start + added as usize * row_bytes]);
         self.height += added;
         self.last = next;
+        self.last_offset = Some(offset as usize);
         if added < offset || self.height >= self.max_height {
             self.full = true;
             return Outcome::LimitReached;
@@ -185,6 +265,17 @@ mod tests {
             let value = texture(x, y, seed);
             Rgba([value, value.wrapping_add(40), value / 2, 255])
         })
+    }
+
+    /// A page whose rows in `gap` are a plain light grey, like the space between sections.
+    fn page_with_gap(height: u32, gap: std::ops::Range<u32>) -> RgbaImage {
+        let mut image = page(height, 8);
+        for (_, y, pixel) in image.enumerate_pixels_mut() {
+            if gap.contains(&y) {
+                *pixel = Rgba([240, 240, 240, 255]);
+            }
+        }
+        image
     }
 
     fn frame_at(page: &RgbaImage, top: u32) -> RgbaImage {
@@ -262,6 +353,39 @@ mod tests {
         let plain = RgbaImage::from_pixel(WIDTH, FRAME, Rgba([250, 250, 250, 255]));
         let mut stitcher = Stitcher::new(&plain);
         assert_eq!(stitcher.push(&plain), Outcome::Unchanged);
-        assert_eq!(find_offset(&signature(&plain), &signature(&page(FRAME, 7))), Match::NotFound);
+        assert_eq!(find_offset(&signature(&plain), &signature(&page(FRAME, 7)), None), Match::NotFound);
+    }
+
+    #[test]
+    fn a_blank_gap_between_sections_is_crossed_with_noise() {
+        let source = page_with_gap(700, 100..250);
+        let mut stitcher = Stitcher::new(&noisy(&frame_at(&source, 0)));
+        // The second step overlaps mostly blank rows; only ten rows of content line it up.
+        for (top, step) in [(60, 60), (110, 50), (170, 60), (230, 60), (290, 60), (350, 60)] {
+            assert_eq!(stitcher.push(&noisy(&frame_at(&source, top))), Outcome::Appended(step), "frame at {top}");
+        }
+        assert_eq!(stitcher.height(), 550);
+    }
+
+    #[test]
+    fn an_overlap_of_only_blank_rows_is_not_trusted() {
+        // Every offset that fits leaves only blank rows on both sides, which would line up
+        // at any offset; the real one (150) cannot be told apart, so nothing is added.
+        let source = page_with_gap(700, 100..400);
+        let previous = signature(&noisy(&frame_at(&source, 0)));
+        let next = signature(&noisy(&frame_at(&source, 150)));
+        assert_eq!(find_offset(&previous, &next, None), Match::NotFound);
+        assert_eq!(find_offset(&previous, &next, Some(100)), Match::NotFound);
+    }
+
+    #[test]
+    fn the_hint_gives_the_same_offset_as_a_full_search() {
+        let source = page(600, 9);
+        let previous = signature(&frame_at(&source, 0));
+        let next = signature(&noisy(&frame_at(&source, 70)));
+        assert_eq!(find_offset(&previous, &next, None), Match::Offset(70));
+        assert_eq!(find_offset(&previous, &next, Some(60)), Match::Offset(70));
+        // A stale hint far from the real offset still lets the full search find it.
+        assert_eq!(find_offset(&previous, &next, Some(150)), Match::Offset(70));
     }
 }
