@@ -30,9 +30,10 @@ const MODIFIERS: [(Modifiers, &str, &str); 4] = [
     (Modifiers::SUPER, "Cmd", "⌘"),
 ];
 
+/// Zone uses ⌃⌥⌘5 like the original Xnapper; the rest are ⇧⌘ plus a digit.
 fn default_shortcut(kind: CaptureKind) -> Shortcut {
     let key = match kind {
-        CaptureKind::Region => Code::Digit2,
+        CaptureKind::Region => return Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER), Code::Digit5),
         CaptureKind::Window => Code::Digit7,
         CaptureKind::Screen => Code::Digit8,
         CaptureKind::Scroll => Code::Digit9,
@@ -317,10 +318,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_cmd_shift_two_seven_eight_nine() {
+    fn defaults_are_ctrl_alt_cmd_five_then_cmd_shift_seven_eight_nine() {
         let assigned = defaults();
         let text = |kind| assigned[&kind].as_ref().map(canonical);
-        assert_eq!(text(CaptureKind::Region).as_deref(), Some("Shift+Cmd+Digit2"));
+        assert_eq!(text(CaptureKind::Region).as_deref(), Some("Ctrl+Alt+Cmd+Digit5"));
         assert_eq!(text(CaptureKind::Window).as_deref(), Some("Shift+Cmd+Digit7"));
         assert_eq!(text(CaptureKind::Screen).as_deref(), Some("Shift+Cmd+Digit8"));
         assert_eq!(text(CaptureKind::Scroll).as_deref(), Some("Shift+Cmd+Digit9"));
@@ -364,6 +365,7 @@ mod tests {
         let saved = HashMap::from([
             ("region".to_string(), Some("Alt+Cmd+KeyR".to_string())),
             ("window".to_string(), None),
+            // Saved before ⌃⌥⌘5 became the zone default: a saved choice always wins.
             ("screen".to_string(), Some("garbage".to_string())),
             // Clashes with the region shortcut above, so it is dropped.
             ("scroll".to_string(), Some("Alt+Cmd+KeyR".to_string())),
@@ -373,5 +375,13 @@ mod tests {
         assert_eq!(assigned[&CaptureKind::Window], None);
         assert_eq!(assigned[&CaptureKind::Screen], Some(default_shortcut(CaptureKind::Screen)));
         assert_eq!(assigned[&CaptureKind::Scroll], None);
+    }
+
+    #[test]
+    fn an_old_saved_zone_shortcut_is_kept() {
+        let saved = HashMap::from([("region".to_string(), Some("Shift+Cmd+Digit2".to_string()))]);
+        let assigned = load(Some(saved));
+        assert_eq!(assigned[&CaptureKind::Region].as_ref().map(canonical).as_deref(), Some("Shift+Cmd+Digit2"));
+        assert_eq!(assigned[&CaptureKind::Window], Some(default_shortcut(CaptureKind::Window)));
     }
 }

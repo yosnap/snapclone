@@ -5,7 +5,8 @@ use xcap::image::RgbaImage;
 
 use crate::capture;
 
-/// The image and its pixels per point. Errors make the caller fall back to `screencapture`.
+/// The image and its pixels per point, taken before anything shows or focuses a window (see
+/// the invariant in `capture::run_capture`). Errors make the caller fall back to `screencapture`.
 pub fn capture() -> Result<(RgbaImage, f64), String> {
     if !capture::screen_capture_allowed() {
         return Err("Screen Recording permission is not granted".into());

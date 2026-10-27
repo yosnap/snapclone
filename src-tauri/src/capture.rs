@@ -142,6 +142,13 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
         return;
     }
 
+    // Invariant: the screens are captured before anything activates Snapclone or moves the
+    // focus (no `show`, `set_focus`, activation or overlay before the shot), so a menu or a
+    // `<select>` open in another app stays open and shows in the capture. A shortcut press
+    // does not activate the app; a hidden editor is left alone, and a visible one is only
+    // ordered out, which does not activate the app either. Every capture kind keeps this:
+    // the selector shoots the monitors before opening its overlays (which the scroll capture
+    // also starts from), and the full-screen capture shows the editor only after the shot.
     if let Some(window) = app.get_webview_window(EDITOR_WINDOW)
         && window.is_visible().unwrap_or(false)
     {

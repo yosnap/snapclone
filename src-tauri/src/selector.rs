@@ -95,7 +95,8 @@ pub fn crop_rect(rect: Rect, scale: f64, image_width: u32, image_height: u32) ->
     (right > left && bottom > top).then_some((left, top, right - left, bottom - top))
 }
 
-/// Captures every monitor and opens the overlays. On error nothing is left open, so the
+/// Captures every monitor and opens the overlays, in that order: the overlays take the focus,
+/// so the shot must come first (see the invariant in `capture::run_capture`). On error nothing is left open, so the
 /// caller can fall back to the system selector; the capture stays "in progress" either way.
 pub fn open(app: &AppHandle, kind: CaptureKind) -> Result<(), String> {
     if !capture::screen_capture_allowed() {
