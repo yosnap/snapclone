@@ -60,7 +60,8 @@ pub fn is_reachable(window: Rect, monitors: &[Rect]) -> bool {
 
 /// Places a toolbar of `width` x `height` next to `zone` without covering it: below, then
 /// above, on the zone's monitor; then centred low on another monitor. Only when nothing
-/// else fits does it overlap the zone, at the bottom of its monitor.
+/// else fits does it overlap the zone, at the bottom of its monitor; even then it is left
+/// out of the captured frames, which only take the windows below it.
 pub fn toolbar_position(zone: Rect, monitor: Rect, others: &[Rect], width: u32, height: u32, gap: u32) -> Rect {
     let clamp_x = |area: Rect| {
         let centred = i64::from(zone.x) + (i64::from(zone.width) - i64::from(width)) / 2;

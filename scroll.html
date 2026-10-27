@@ -15,22 +15,39 @@
         font-size: 13px;
       }
 
-      /* The four frame windows only show their colour. */
-      body.edge {
-        background: #2563eb;
-      }
-
-      body.edge .bar {
-        display: none;
+      /*
+       * By default this is the frame: transparent apart from its border, painted inside its
+       * edge. It starts that way so the zone is never covered while the script loads.
+       */
+      html,
+      body {
+        background: transparent;
       }
 
       body {
+        box-sizing: border-box;
+        border: 2px solid #2563eb;
+      }
+
+      .bar {
+        display: none;
+      }
+
+      html.toolbar,
+      html.toolbar body {
         background: #18181b;
         color: #f4f4f5;
       }
 
-      .bar {
+      html.toolbar body {
+        border: 0;
+      }
+
+      html.toolbar .bar {
         display: flex;
+      }
+
+      .bar {
         align-items: center;
         gap: 10px;
         height: 100%;
@@ -91,7 +108,7 @@
         <span id="scroll-height" class="height">Altura: 0 px</span>
         <span id="scroll-note" class="note" role="status">Desplázate por la zona marcada</span>
       </div>
-      <button type="button" id="scroll-finish">Terminar ↩</button>
+      <button type="button" id="scroll-finish">Terminar</button>
       <button type="button" id="scroll-cancel" class="secondary">Cancelar</button>
     </div>
   </body>

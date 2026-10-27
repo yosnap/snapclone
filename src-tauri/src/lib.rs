@@ -1,4 +1,6 @@
 mod capture;
+#[cfg(target_os = "macos")]
+mod capture_below;
 mod editor_window;
 mod export;
 mod geometry;

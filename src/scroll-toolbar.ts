@@ -3,9 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /**
- * The page of the scroll capture windows. The four frame windows only show a colour; the
- * toolbar shows the stitched height and ends the capture with Terminar (Enter) or
- * Cancelar (Esc).
+ * The page of the scroll capture windows. The frame window only shows its border; the
+ * toolbar shows the stitched height and ends the capture with its buttons. It never takes
+ * the keyboard, which stays with the app being scrolled, so Enter and Esc are not used.
  */
 type Progress = { height: number; maxHeight: number; state: "capturing" | "lost" | "full" | "failed" };
 
@@ -43,20 +43,10 @@ function showProgress({ height, maxHeight, state }: Progress): void {
   finishButton.disabled = finished || state === "failed";
 }
 
-if (getCurrentWindow().label.startsWith("scroll-edge-")) {
-  document.body.classList.add("edge");
-} else {
+if (getCurrentWindow().label === "scroll-toolbar") {
+  document.documentElement.classList.add("toolbar");
   finishButton.addEventListener("click", () => end("finish_scroll"));
   cancelButton.addEventListener("click", () => end("cancel_scroll"));
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      end("finish_scroll");
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      end("cancel_scroll");
-    }
-  });
   document.addEventListener("contextmenu", (event) => event.preventDefault());
   listen<Progress>("scroll-progress", (event) => showProgress(event.payload)).catch((error) => {
     console.error("scroll progress unavailable", error);

@@ -1,35 +1,37 @@
 //! Scroll capture. Once the selector has picked a zone, its overlays close and a thin frame
-//! marks the zone instead: four borderless windows just outside it, which let the mouse
-//! through so the app underneath keeps scrolling. A small toolbar floats next to the zone,
-//! never over it. A worker thread captures the zone every `SAMPLE_INTERVAL` and stitches
-//! each frame onto the previous ones; finishing hands the tall image to the normal flow.
+//! marks the zone instead: one transparent window just around it that lets the mouse
+//! through, so the app underneath keeps scrolling. A small toolbar floats next to the zone.
+//! Neither takes the focus, and Snapclone steps back so the keyboard stays with the app
+//! being scrolled. A worker thread captures the zone every `SAMPLE_INTERVAL`, only with the
+//! windows below the frame (so neither of ours ever shows), and stitches each frame onto the
+//! previous ones; finishing hands the tall image to the normal flow.
 
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, window::Color};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::{
-    capture,
+    capture, capture_below,
     geometry::{self, Rect},
-    selector,
     stitch::{self, Outcome, Stitcher},
 };
 
 const WINDOW_PREFIX: &str = "scroll-";
+const FRAME_WINDOW: &str = "scroll-frame";
 const TOOLBAR_WINDOW: &str = "scroll-toolbar";
 const PAGE: &str = "scroll.html";
 const PROGRESS_EVENT: &str = "scroll-progress";
-/// Frame thickness in points; drawn outside the zone so it never shows in the capture.
+/// Frame thickness in points; drawn outside the zone, and never captured anyway.
 const EDGE: u32 = 2;
-const EDGE_COLOR: Color = Color(37, 99, 235, 255);
 const TOOLBAR_WIDTH: u32 = 460;
 const TOOLBAR_HEIGHT: u32 = 56;
 const TOOLBAR_GAP: u32 = 8;
@@ -37,11 +39,16 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(150);
 /// Lets the selector overlays disappear before the first frame is taken.
 const SETTLE: Duration = Duration::from_millis(200);
 
-/// The scroll capture in progress, if any.
+/// The scroll capture in progress, if any. Each one gets a new id, so a worker that is
+/// still winding down after a cancel never reports into the next capture's toolbar.
 #[derive(Default)]
-pub struct ScrollCapture(Mutex<Option<Session>>);
+pub struct ScrollCapture {
+    session: Mutex<Option<Session>>,
+    next_id: AtomicU64,
+}
 
 struct Session {
+    id: u64,
     stop: Arc<AtomicBool>,
     worker: JoinHandle<Result<Stitcher, String>>,
     /// Zone width in points, to work out the pixels per point of the result.
@@ -51,7 +58,6 @@ struct Session {
 /// Where to capture: a zone in points relative to its monitor, plus every monitor's global
 /// rectangle in points so the toolbar can be placed.
 pub struct Target {
-    pub monitor_id: u32,
     pub monitor: Rect,
     pub zone: Rect,
     pub others: Vec<Rect>,
@@ -78,52 +84,46 @@ struct Progress {
 /// Opens the frame and the toolbar and starts capturing. On error nothing is left open and
 /// the caller still owns `in_progress`; on success this module releases it when done.
 pub fn begin(app: &AppHandle, target: Target) -> Result<(), String> {
-    let Target { monitor_id, monitor, zone, others } = target;
+    let Target { monitor, zone, others } = target;
     let global = Rect::new(monitor.x + zone.x, monitor.y + zone.y, zone.width, zone.height);
     let framed = Rect::new(global.x - EDGE as i32, global.y - EDGE as i32, global.width + EDGE * 2, global.height + EDGE * 2);
     let toolbar = geometry::toolbar_position(framed, monitor, &others, TOOLBAR_WIDTH, TOOLBAR_HEIGHT, TOOLBAR_GAP);
-    if let Err(error) = open_windows(app, global, toolbar) {
-        close_windows(app);
-        return Err(error.to_string());
-    }
+    let below = match open_windows(app, framed, toolbar) {
+        Ok(window_number) => window_number,
+        Err(error) => {
+            close_windows(app);
+            return Err(error);
+        }
+    };
 
+    let state = app.state::<ScrollCapture>();
+    let id = state.next_id.fetch_add(1, Ordering::SeqCst);
     let stop = Arc::new(AtomicBool::new(false));
+    // Held while the session is stored, so the worker's first report finds it in place.
+    let mut session = state.session.lock().unwrap();
     let worker = std::thread::spawn({
         let (app, stop) = (app.clone(), Arc::clone(&stop));
         move || {
-            let result = run(&app, monitor_id, zone, &stop);
+            let result = run(&app, id, global, below, &stop);
             if let Err(error) = &result {
                 eprintln!("scroll capture stopped: {error}");
-                emit(&app, Progress { height: 0, max_height: stitch::MAX_HEIGHT, state: State::Failed });
+                report(&app, id, Progress { height: 0, max_height: stitch::MAX_HEIGHT, state: State::Failed });
             }
             result
         }
     });
-    *app.state::<ScrollCapture>().0.lock().unwrap() = Some(Session { stop, worker, zone_width: zone.width });
+    *session = Some(Session { id, stop, worker, zone_width: zone.width });
     Ok(())
 }
 
-fn open_windows(app: &AppHandle, zone: Rect, toolbar: Rect) -> tauri::Result<()> {
-    let (left, top) = (zone.x - EDGE as i32, zone.y - EDGE as i32);
-    let (right, bottom) = (zone.x + zone.width as i32, zone.y + zone.height as i32);
-    let edges = [
-        Rect::new(left, top, zone.width + EDGE * 2, EDGE),
-        Rect::new(left, bottom, zone.width + EDGE * 2, EDGE),
-        Rect::new(left, zone.y, EDGE, zone.height),
-        Rect::new(right, zone.y, EDGE, zone.height),
-    ];
-    for (index, edge) in edges.into_iter().enumerate() {
-        let window = builder(app, &format!("{WINDOW_PREFIX}edge-{index}"), edge)
-            .focused(false)
-            .focusable(false)
-            .background_color(EDGE_COLOR)
-            .build()?;
-        window.set_ignore_cursor_events(true)?;
-        selector::raise_above_menu_bar(app, window);
-    }
-    let window = builder(app, TOOLBAR_WINDOW, toolbar).focused(true).accept_first_mouse(true).build()?;
-    selector::raise_above_menu_bar(app, window);
-    Ok(())
+/// Opens the frame and the toolbar without focusing either, and returns the frame's window
+/// number: frames are captured below it.
+fn open_windows(app: &AppHandle, framed: Rect, toolbar: Rect) -> Result<u32, String> {
+    let frame = builder(app, FRAME_WINDOW, framed).transparent(true).build().map_err(|error| error.to_string())?;
+    frame.set_ignore_cursor_events(true).map_err(|error| error.to_string())?;
+    // A click on a button still works without the toolbar ever becoming the key window.
+    let bar = builder(app, TOOLBAR_WINDOW, toolbar).accept_first_mouse(true).build().map_err(|error| error.to_string())?;
+    arrange(app, frame, bar)
 }
 
 fn builder<'a>(app: &'a AppHandle, label: &str, rect: Rect) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
@@ -137,6 +137,41 @@ fn builder<'a>(app: &'a AppHandle, label: &str, rect: Rect) -> WebviewWindowBuil
         .always_on_top(true)
         .skip_taskbar(true)
         .visible_on_all_workspaces(true)
+        .focused(false)
+        .focusable(false)
+}
+
+/// Puts the frame above every app's windows and the toolbar above the frame, so capturing
+/// below the frame leaves both out. Then Snapclone steps back: the selector it comes from
+/// had the keyboard, and the app being scrolled should get it back.
+#[cfg(target_os = "macos")]
+fn arrange(app: &AppHandle, frame: WebviewWindow, toolbar: WebviewWindow) -> Result<u32, String> {
+    let (sender, receiver) = mpsc::channel();
+    app.run_on_main_thread(move || {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{NSApplication, NSPopUpMenuWindowLevel, NSWindow};
+        let result = (|| {
+            let frame = frame.ns_window().map_err(|error| error.to_string())?;
+            let toolbar = toolbar.ns_window().map_err(|error| error.to_string())?;
+            // SAFETY: Tauri hands out the live NSWindows of these windows, and AppKit is only
+            // touched here on the main thread.
+            let (frame, toolbar) = unsafe { (&*frame.cast::<NSWindow>(), &*toolbar.cast::<NSWindow>()) };
+            frame.setLevel(NSPopUpMenuWindowLevel);
+            toolbar.setLevel(NSPopUpMenuWindowLevel + 1);
+            if let Some(main_thread) = MainThreadMarker::new() {
+                NSApplication::sharedApplication(main_thread).deactivate();
+            }
+            u32::try_from(frame.windowNumber()).map_err(|_| "the frame has no window number".to_string())
+        })();
+        let _ = sender.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+    receiver.recv().map_err(|error| error.to_string())?
+}
+
+#[cfg(not(target_os = "macos"))]
+fn arrange(_app: &AppHandle, _frame: WebviewWindow, _toolbar: WebviewWindow) -> Result<u32, String> {
+    Err("scroll capture is only available on macOS".into())
 }
 
 fn close_windows(app: &AppHandle) {
@@ -147,7 +182,13 @@ fn close_windows(app: &AppHandle) {
     }
 }
 
-fn emit(app: &AppHandle, progress: Progress) {
+/// Sends progress to the toolbar, but only while `id` is still the current capture.
+fn report(app: &AppHandle, id: u64, progress: Progress) {
+    let state = app.state::<ScrollCapture>();
+    let session = state.session.lock().unwrap();
+    if session.as_ref().is_none_or(|session| session.id != id) {
+        return;
+    }
     if let Err(error) = app.emit_to(TOOLBAR_WINDOW, PROGRESS_EVENT, progress) {
         eprintln!("scroll-progress emit failed: {error}");
     }
@@ -155,19 +196,12 @@ fn emit(app: &AppHandle, progress: Progress) {
 
 /// The capture loop. Sampling keeps a steady pace without piling up: a slow capture just
 /// delays the next one.
-fn run(app: &AppHandle, monitor_id: u32, zone: Rect, stop: &AtomicBool) -> Result<Stitcher, String> {
+fn run(app: &AppHandle, id: u64, zone: Rect, below: u32, stop: &AtomicBool) -> Result<Stitcher, String> {
     std::thread::sleep(SETTLE);
-    let monitors = xcap::Monitor::all().map_err(|error| error.to_string())?;
-    let monitor = monitors
-        .into_iter()
-        .find(|monitor| monitor.id().is_ok_and(|id| id == monitor_id))
-        .ok_or("the monitor is gone")?;
-    let (x, y) = (zone.x.max(0) as u32, zone.y.max(0) as u32);
-    let grab = || monitor.capture_region(x, y, zone.width, zone.height).map_err(|error| error.to_string());
-
+    let grab = || capture_below::capture(zone, below);
     let mut stitcher = Stitcher::new(&grab()?);
     let mut state = State::Capturing;
-    emit(app, Progress { height: stitcher.height(), max_height: stitch::MAX_HEIGHT, state: state.clone() });
+    report(app, id, Progress { height: stitcher.height(), max_height: stitch::MAX_HEIGHT, state: state.clone() });
     while !stop.load(Ordering::SeqCst) {
         let started = Instant::now();
         match grab() {
@@ -182,14 +216,14 @@ fn run(app: &AppHandle, monitor_id: u32, zone: Rect, stop: &AtomicBool) -> Resul
             // A single failed frame (a display reconfiguring) is not worth ending the capture.
             Err(error) => eprintln!("scroll frame could not be captured: {error}"),
         }
-        emit(app, Progress { height: stitcher.height(), max_height: stitch::MAX_HEIGHT, state: state.clone() });
+        report(app, id, Progress { height: stitcher.height(), max_height: stitch::MAX_HEIGHT, state: state.clone() });
         std::thread::sleep(SAMPLE_INTERVAL.saturating_sub(started.elapsed()));
     }
     Ok(stitcher)
 }
 
 fn take_session(app: &AppHandle) -> Option<Session> {
-    let session = app.state::<ScrollCapture>().0.lock().unwrap().take();
+    let session = app.state::<ScrollCapture>().session.lock().unwrap().take();
     if let Some(session) = &session {
         session.stop.store(true, Ordering::SeqCst);
         close_windows(app);
@@ -197,14 +231,15 @@ fn take_session(app: &AppHandle) -> Option<Session> {
     session
 }
 
-/// Discards the capture. The worker notices the stop flag and ends by itself.
+/// Discards the capture. The worker notices the stop flag and ends by itself; it can no
+/// longer report anywhere, since its session is gone.
 fn abandon(app: &AppHandle) {
     if take_session(app).is_some() {
         capture::selection_ended(app);
     }
 }
 
-/// A frame or toolbar window closed some other way must not leave the others behind.
+/// The frame or the toolbar closed some other way must not leave the other behind.
 pub fn on_window_destroyed(app: &AppHandle, label: &str) {
     if label.starts_with(WINDOW_PREFIX) {
         abandon(app);

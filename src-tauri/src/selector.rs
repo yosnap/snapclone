@@ -38,7 +38,6 @@ struct Session {
 }
 
 struct MonitorShot {
-    id: u32,
     /// Global position and size in points, as the overlay window is laid out.
     x: i32,
     y: i32,
@@ -110,7 +109,6 @@ pub fn open(app: &AppHandle, kind: CaptureKind) -> Result<(), String> {
         .iter()
         .map(|monitor| {
             Ok(MonitorShot {
-                id: monitor.id()?,
                 x: monitor.x()?,
                 y: monitor.y()?,
                 width: monitor.width()?,
@@ -184,7 +182,7 @@ fn open_overlay(app: &AppHandle, index: usize, x: i32, y: i32, width: u32, heigh
 
 /// "Always on top" is the floating level, which the menu bar and the Dock still cover.
 #[cfg(target_os = "macos")]
-pub fn raise_above_menu_bar(app: &AppHandle, window: WebviewWindow) {
+fn raise_above_menu_bar(app: &AppHandle, window: WebviewWindow) {
     let result = app.run_on_main_thread(move || {
         use objc2_app_kit::{NSPopUpMenuWindowLevel, NSWindow};
         let Ok(pointer) = window.ns_window() else { return };
@@ -199,7 +197,7 @@ pub fn raise_above_menu_bar(app: &AppHandle, window: WebviewWindow) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn raise_above_menu_bar(_app: &AppHandle, _window: WebviewWindow) {}
+fn raise_above_menu_bar(_app: &AppHandle, _window: WebviewWindow) {}
 
 fn close_overlays(app: &AppHandle) {
     for (label, window) in app.webview_windows() {
@@ -330,7 +328,6 @@ fn start_scroll(app: &AppHandle, session: Session, index: usize, rect: Rect) -> 
             scroll::begin(
                 app,
                 scroll::Target {
-                    monitor_id: shot.id,
                     monitor: bounds(shot),
                     zone: geometry::Rect::new(x as i32, y as i32, width, height),
                     others: others.collect(),
