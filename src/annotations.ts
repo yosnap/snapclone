@@ -1,4 +1,5 @@
 import type { RedactCategory } from "./auto-redact";
+import type { Capture } from "./render";
 
 /**
  * Annotation model and drawing. Coordinates are capture pixels with the origin at the
@@ -83,12 +84,8 @@ export function moved(annotation: Annotation, dx: number, dy: number): Annotatio
 }
 
 /** Expects the context translated to the capture origin and clipped to it. */
-export function drawAnnotations(
-  ctx: CanvasRenderingContext2D,
-  image: HTMLImageElement,
-  annotations: Annotation[],
-  scale: number,
-): void {
+export function drawAnnotations(ctx: CanvasRenderingContext2D, capture: Capture, annotations: Annotation[]): void {
+  const { scale } = capture;
   for (const annotation of annotations) {
     switch (annotation.kind) {
       case "arrow":
@@ -107,7 +104,7 @@ export function drawAnnotations(
         ctx.fillText(annotation.text, annotation.at.x, annotation.at.y + TEXT_SIZE * scale * 0.1);
         break;
       case "pixelate":
-        drawPixelate(ctx, image, annotation, scale);
+        drawPixelate(ctx, capture, annotation);
         break;
     }
   }
@@ -159,11 +156,12 @@ function drawArrow(ctx: CanvasRenderingContext2D, arrow: ArrowAnnotation, scale:
 const pixelLayer = document.createElement("canvas");
 
 /** Samples the original capture only, so pixelation never depends on other annotations. */
-function drawPixelate(ctx: CanvasRenderingContext2D, image: HTMLImageElement, box: Box, scale: number): void {
+function drawPixelate(ctx: CanvasRenderingContext2D, capture: Capture, box: Box): void {
+  const { image, scale } = capture;
   const x = Math.max(0, Math.floor(box.x));
   const y = Math.max(0, Math.floor(box.y));
-  const width = Math.min(image.naturalWidth, Math.ceil(box.x + box.width)) - x;
-  const height = Math.min(image.naturalHeight, Math.ceil(box.y + box.height)) - y;
+  const width = Math.min(capture.width, Math.ceil(box.x + box.width)) - x;
+  const height = Math.min(capture.height, Math.ceil(box.y + box.height)) - y;
   if (width <= 0 || height <= 0) return;
 
   const block = Math.max(2, Math.round(PIXEL_BLOCK * scale));

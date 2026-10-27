@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AnnotationEditor, type Tool } from "./annotation-editor";
-import { ANNOTATION_COLORS, type PixelateAnnotation } from "./annotations";
+import { ANNOTATION_COLORS, type PixelateAnnotation, type Point, moved } from "./annotations";
 import {
   type RedactCategory,
   type SensitiveRegion,
@@ -10,11 +10,12 @@ import {
   detectSensitive,
   toPixelateAnnotations,
 } from "./auto-redact";
+import { type BalanceResult, analyzeBalance, balancedCanvas, readPixels } from "./balance";
 import { bindControls } from "./controls";
 import { copyToClipboard, saveToFile } from "./export";
 import { applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { bindPresets } from "./presets";
-import { type Capture, layout, render } from "./render";
+import { type Capture, layout, makeCapture, render } from "./render";
 import { loadSettings, saveSetting } from "./settings";
 import { defaultStyle } from "./style";
 
@@ -28,12 +29,23 @@ const copyButton = document.querySelector<HTMLButtonElement>("#copy-button")!;
 const saveButton = document.querySelector<HTMLButtonElement>("#save-button")!;
 const toolbar = document.querySelector<HTMLElement>("#toolbar")!;
 const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
+const balanceToggle = document.querySelector<HTMLInputElement>("#balance-toggle")!;
 
 const style = defaultStyle();
 const redactSettings = defaultRedactSettings();
+/** What the editor shows: the capture as taken, or its balanced version. */
 let capture: Capture | null = null;
+/** The capture as taken; detection boxes and balancing always refer to it. */
+let original: Capture | null = null;
 let captureId: string | null = null;
-/** Every region found in the current capture, with stable ids so re-enabling never duplicates. */
+/** Balancing is computed once per capture and reused when toggled back on. */
+let balanceCache: { for: Capture; result: BalanceResult; capture: Capture | null } | null = null;
+/** How far the content currently sits from where it is in `original`. */
+let shift: Point = { x: 0, y: 0 };
+/**
+ * Every region found in the current capture, in `original` coordinates and with stable ids
+ * so re-enabling never duplicates. They are shifted like everything else when added.
+ */
 let detectedRegions: PixelateAnnotation[] = [];
 let detectedFor: string | null = null;
 /** Capture whose text is being analysed; exports wait for it so nothing leaves unredacted. */
@@ -50,8 +62,8 @@ const editor = new AnnotationEditor(
       ? {
           layout: layout(capture, style),
           scale: capture.scale,
-          imageWidth: capture.image.naturalWidth,
-          imageHeight: capture.image.naturalHeight,
+          imageWidth: capture.width,
+          imageHeight: capture.height,
         }
       : null,
   () => {
@@ -82,8 +94,10 @@ async function loadCapture({ id, scale }: CaptureReady): Promise<void> {
   image.src = captureUrl(id);
   await image.decode();
 
-  capture = { image, scale };
+  original = makeCapture(image, scale);
+  capture = original;
   captureId = id;
+  shift = { x: 0, y: 0 };
   detectedRegions = [];
   detectedFor = null;
   editor.reset();
@@ -91,9 +105,58 @@ async function loadCapture({ id, scale }: CaptureReady): Promise<void> {
   canvas.hidden = false;
   showStatus("");
   syncExportButtons();
-  scheduleRender();
   // Skip Vision entirely while every category is off; enabling one runs it on demand.
   if (Object.values(redactSettings).some(Boolean)) runAutoRedaction(id);
+  if (balanceToggle.checked) applyBalance(true);
+  scheduleRender();
+}
+
+function balanceOf(source: Capture): { result: BalanceResult; capture: Capture | null } {
+  if (balanceCache?.for !== source) {
+    const result = analyzeBalance(readPixels(source.image, source.width, source.height));
+    const balanced = result.kind === "balanced" ? makeCapture(balancedCanvas(source.image, result.plan), source.scale) : null;
+    balanceCache = { for: source, result, capture: balanced };
+  }
+  return balanceCache;
+}
+
+/**
+ * Switches between the original and the balanced capture. Annotations, every history
+ * snapshot and the detected regions move with the content so they stay on what they mark.
+ */
+function applyBalance(enabled: boolean): void {
+  if (!original) return;
+  let target = original;
+  let offset: Point = { x: 0, y: 0 };
+  if (enabled) {
+    let balance: ReturnType<typeof balanceOf>;
+    try {
+      balance = balanceOf(original);
+    } catch (error) {
+      showStatus(`No se pudo equilibrar la captura: ${error}`, true);
+      return;
+    }
+    const { result, capture: balanced } = balance;
+    if (result.kind === "balanced" && balanced) {
+      target = balanced;
+      offset = result.plan.offset;
+    } else {
+      showStatus(
+        result.kind === "not-uniform"
+          ? "No se puede equilibrar: el borde de la captura no es de un color uniforme"
+          : "No se puede equilibrar: la captura es de un solo color",
+      );
+    }
+  }
+  editor.translate(offset.x - shift.x, offset.y - shift.y);
+  shift = offset;
+  capture = target;
+  scheduleRender();
+}
+
+/** Detected regions are kept in original coordinates; this places them on the current capture. */
+function shifted(regions: PixelateAnnotation[]): PixelateAnnotation[] {
+  return regions.map((region) => moved(region, shift.x, shift.y) as PixelateAnnotation);
 }
 
 function syncExportButtons(): void {
@@ -114,11 +177,11 @@ async function runAutoRedaction(id: string): Promise<void> {
   try {
     const regions: SensitiveRegion[] = await detectSensitive(id);
     // A newer capture may have replaced this one while Vision was running.
-    if (id !== captureId || !capture) return;
-    detectedRegions = toPixelateAnnotations(regions, capture.image.naturalWidth, capture.image.naturalHeight, capture.scale);
+    if (id !== captureId || !original) return;
+    detectedRegions = toPixelateAnnotations(regions, original.width, original.height, original.scale);
     detectedFor = id;
     const enabled = detectedRegions.filter((region) => region.auto && redactSettings[region.auto]);
-    editor.addAutoRedactions(enabled);
+    editor.addAutoRedactions(shifted(enabled));
     // Only replace our own progress message, never an export confirmation shown meanwhile.
     if (status.textContent === SEARCHING_MESSAGE) {
       showStatus(enabled.length > 0 ? `Tachados automáticamente: ${enabled.length}` : "");
@@ -137,7 +200,7 @@ function toggleRedaction(category: RedactCategory, enabled: boolean): void {
   if (!enabled) {
     editor.removeAutoRedactions(category);
   } else if (detectedFor === captureId) {
-    editor.addAutoRedactions(regionsOf(category));
+    editor.addAutoRedactions(shifted(regionsOf(category)));
   } else {
     runAutoRedaction(captureId);
   }
@@ -206,6 +269,11 @@ async function init(): Promise<void> {
     notify: (message) => showStatus(message),
   });
   bindRedactControls(sidebar.querySelector<HTMLElement>("#redact-options")!, redactSettings, toggleRedaction);
+  balanceToggle.checked = settings.balance;
+  balanceToggle.addEventListener("change", () => {
+    saveSetting("balance", balanceToggle.checked);
+    applyBalance(balanceToggle.checked);
+  });
   buildToolbar();
 
   // The Vite dev server is reachable from any browser, but only the Tauri window has the Rust bridge.

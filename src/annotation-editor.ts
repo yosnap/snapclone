@@ -134,6 +134,15 @@ export class AnnotationEditor {
     this.applyToHistory((list) => list.filter((item) => !(item.kind === "pixelate" && item.auto === category)));
   }
 
+  /**
+   * Moves every annotation, in every history snapshot, when the capture under them moves
+   * (balancing re-centres its content). Not undoable: undo must not undo the image change.
+   */
+  translate(dx: number, dy: number): void {
+    if (dx === 0 && dy === 0) return;
+    this.applyToHistory((list) => list.map((item) => moved(item, dx, dy)));
+  }
+
   private applyToHistory(change: (list: Annotation[]) => Annotation[]): void {
     if (this.drag) {
       this.pendingHistoryChanges.push(change);

@@ -17,6 +17,7 @@ export type Settings = {
   style: StoredStyle;
   redact: RedactSettings;
   annotationColor: string;
+  balance: boolean;
   presets: Preset[];
 };
 
@@ -31,6 +32,7 @@ export function defaultSettings(): Settings {
     style: toStoredStyle(defaultStyle()),
     redact: defaultRedactSettings(),
     annotationColor: ANNOTATION_COLORS[0],
+    balance: false,
     presets: [],
   };
 }
@@ -56,12 +58,13 @@ export async function loadSettings(): Promise<Settings> {
       return undefined;
     }
   };
-  const [style, redact, annotationColor, presets] = await Promise.all(
-    (["style", "redact", "annotationColor", "presets"] as const).map(read),
+  const [style, redact, annotationColor, balance, presets] = await Promise.all(
+    (["style", "redact", "annotationColor", "balance", "presets"] as const).map(read),
   );
   settings.style = parseStoredStyle(style) ?? settings.style;
   settings.redact = parseRedact(redact) ?? settings.redact;
   if (ANNOTATION_COLORS.includes(annotationColor as string)) settings.annotationColor = annotationColor as string;
+  if (typeof balance === "boolean") settings.balance = balance;
   settings.presets = parsePresets(presets);
   return settings;
 }
