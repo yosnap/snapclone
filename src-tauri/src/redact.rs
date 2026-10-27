@@ -29,48 +29,93 @@ pub struct SensitiveRegion {
     height: f64,
 }
 
-static PATTERNS: LazyLock<Vec<(Category, Regex)>> = LazyLock::new(|| {
+/// Regexes whose capture group `group` is the sensitive text; group 0 is the whole match.
+/// Group 1 is used where the Rust regex engine's lack of look-behind needs a consumed prefix.
+static PATTERNS: LazyLock<Vec<(Category, Regex, usize)>> = LazyLock::new(|| {
     let ipv4_octet = r"(?:25[0-5]|2[0-4]\d|1?\d?\d)";
     [
-        (Category::Email, r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}".to_string()),
-        // Digit groups separated by spaces or dashes; `is_card_number` validates the digits.
-        (Category::CreditCard, r"\b\d(?:[ -]?\d){12,18}\b".to_string()),
-        (Category::IpAddress, format!(r"\b(?:{ipv4_octet}\.){{3}}{ipv4_octet}\b")),
-        // Full IPv6, or compressed with `::`, so clock times like 12:30 never match.
-        (Category::IpAddress, r"(?i)\b(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}\b".to_string()),
-        (Category::IpAddress, r"(?i)\b(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?".to_string()),
-        (Category::ApiKey, r"[A-Za-z0-9\-_/]{32,}".to_string()),
+        (Category::Email, r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}".to_string(), 0),
+        (Category::IpAddress, format!(r"\b(?:{ipv4_octet}\.){{3}}{ipv4_octet}\b"), 0),
+        // Full IPv6, or compressed with `::` and something after it, so clock times (12:30),
+        // MAC addresses and Rust paths (`std::fs`, `add::`) never match.
+        (Category::IpAddress, r"(?i)\b(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}\b".to_string(), 0),
+        (
+            Category::IpAddress,
+            r"(?i)(?:^|[^0-9a-z:])((?:[0-9a-f]{1,4}:){1,6}(?::[0-9a-f]{1,4}){1,6}|::(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})\b"
+                .to_string(),
+            1,
+        ),
+        // No `/`: it turned file paths into "keys". `+` and `=` padding cover base64 secrets.
+        (Category::ApiKey, r"[A-Za-z0-9_+\-]{32,}={0,2}".to_string(), 0),
     ]
     .into_iter()
-    .map(|(category, pattern)| (category, Regex::new(&pattern).expect("static pattern is valid")))
+    .map(|(category, pattern, group)| (category, Regex::new(&pattern).expect("static pattern is valid"), group))
     .collect()
 });
 
+/// Runs of digit groups separated by single spaces or dashes, as card numbers are printed.
+static DIGIT_RUN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+(?:[ -]\d+)*").expect("static pattern is valid"));
+static DIGIT_GROUP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+").expect("static pattern is valid"));
+
 /// Byte ranges of sensitive substrings in one recognized line.
 pub fn find_sensitive(text: &str) -> Vec<(Category, Range<usize>)> {
-    PATTERNS
+    let mut found: Vec<(Category, Range<usize>)> = PATTERNS
         .iter()
-        .flat_map(|(category, regex)| regex.find_iter(text).map(move |found| (*category, found)))
-        .filter(|(category, found)| match category {
-            Category::CreditCard => is_card_number(found.as_str()),
-            Category::ApiKey => is_key_like(found.as_str()),
-            _ => true,
+        .flat_map(|(category, regex, group)| {
+            regex
+                .captures_iter(text)
+                .filter_map(move |captures| captures.get(*group))
+                .map(move |matched| (*category, matched))
         })
-        .map(|(category, found)| (category, found.range()))
-        .collect()
+        .filter(|(category, matched)| *category != Category::ApiKey || is_key_like(matched.as_str()))
+        .map(|(category, matched)| (category, matched.range()))
+        .collect();
+    found.extend(card_numbers(text).into_iter().map(|range| (Category::CreditCard, range)));
+    found
 }
 
-/// 13–19 digits passing the Luhn checksum, which every card number satisfies.
-fn is_card_number(candidate: &str) -> bool {
-    let digits: Vec<u32> = candidate.chars().filter_map(|c| c.to_digit(10)).collect();
-    if !(13..=19).contains(&digits.len()) {
-        return false;
+/// Longest Luhn-valid span of 13–19 digits starting at each group, so trailing digits
+/// on the same line (a CVV, an expiry) do not hide the card number before them.
+fn card_numbers(text: &str) -> Vec<Range<usize>> {
+    let mut cards = Vec::new();
+    for run in DIGIT_RUN.find_iter(text) {
+        let groups: Vec<Range<usize>> = DIGIT_GROUP
+            .find_iter(run.as_str())
+            .map(|group| run.start() + group.start()..run.start() + group.end())
+            .collect();
+        let mut first = 0;
+        while first < groups.len() {
+            let mut digits = 0;
+            let mut longest = None;
+            for (last, group) in groups.iter().enumerate().skip(first) {
+                digits += group.len();
+                if digits > 19 {
+                    break;
+                }
+                let span = groups[first].start..group.end;
+                if digits >= 13 && passes_luhn(&text[span.clone()]) {
+                    longest = Some((last, span));
+                }
+            }
+            match longest {
+                Some((last, span)) => {
+                    cards.push(span);
+                    first = last + 1;
+                }
+                None => first += 1,
+            }
+        }
     }
-    let sum: u32 = digits
-        .iter()
+    cards
+}
+
+fn passes_luhn(candidate: &str) -> bool {
+    let sum: u32 = candidate
+        .chars()
+        .filter_map(|c| c.to_digit(10))
         .rev()
         .enumerate()
-        .map(|(index, &digit)| match index % 2 {
+        .map(|(index, digit)| match index % 2 {
             0 => digit,
             _ if digit * 2 > 9 => digit * 2 - 9,
             _ => digit * 2,
@@ -79,7 +124,8 @@ fn is_card_number(candidate: &str) -> bool {
     sum.is_multiple_of(10)
 }
 
-/// Keys mix letters and digits; long plain words or paths without digits are not keys.
+/// Keys mix letters and digits; long plain words are not keys. UUIDs still count,
+/// because many services issue them as secrets and a false positive is cheap to delete.
 fn is_key_like(candidate: &str) -> bool {
     candidate.chars().any(|c| c.is_ascii_digit()) && candidate.chars().any(|c| c.is_ascii_alphabetic())
 }
@@ -201,6 +247,26 @@ mod tests {
         assert_eq!(categories("via fe80::1ff:fe23:4567:890a"), vec![(Category::IpAddress, "fe80::1ff:fe23:4567:890a")]);
         assert!(categories("Reunión a las 12:30 o 09:15:00").is_empty());
         assert!(categories("version 1.2.3.400").is_empty());
+    }
+
+    #[test]
+    fn finds_cards_followed_by_more_digits() {
+        assert_eq!(categories("Tarjeta 4111 1111 1111 1111 123"), vec![(Category::CreditCard, "4111 1111 1111 1111")]);
+        assert_eq!(categories("Ref 12 4111 1111 1111 1111"), vec![(Category::CreditCard, "4111 1111 1111 1111")]);
+    }
+
+    #[test]
+    fn finds_compressed_ipv6_but_not_code_paths() {
+        assert_eq!(categories("loopback ::1 ok"), vec![(Category::IpAddress, "::1")]);
+        assert!(categories("use std::fs; let x = add::new();").is_empty());
+        assert!(categories("mac aa:bb:cc:dd:ee:ff").is_empty());
+    }
+
+    #[test]
+    fn paths_are_not_keys_but_base64_secrets_are() {
+        assert!(categories("/Users/paulo/Proyectos/app2/src/main.rs").is_empty());
+        let secret = "dGhpc2lzYWZha2VzZWNyZXQxMjM0NTY3ODkw+abc==";
+        assert_eq!(categories(secret), vec![(Category::ApiKey, secret)]);
     }
 
     #[test]
