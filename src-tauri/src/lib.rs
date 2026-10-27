@@ -32,7 +32,6 @@ pub fn run() {
         .manage(selector::Selection::default())
         .manage(shortcuts::Shortcuts::default())
         .manage(scroll::ScrollCapture::default())
-        .manage(editor_window::EditorContent::default())
         .manage(ocr::OcrCache::default())
         .manage(wallpaper::WallpaperCache::default())
         .plugin(tauri_plugin_dialog::init())
@@ -94,10 +93,9 @@ pub fn run() {
             scroll::cancel_scroll,
             import::open_clipboard_image,
             import::open_image_file,
-            editor_window::set_editor_loaded,
             editor_window::reopen_last_capture,
             ocr::recognize_text,
-            export::copy_text
+            ocr::copy_capture_text
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));

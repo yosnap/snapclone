@@ -13,7 +13,6 @@ export class TextView {
   private readonly empty = document.querySelector<HTMLElement>("#text-empty")!;
   private readonly copyButton = document.querySelector<HTMLButtonElement>("#text-copy")!;
   private readonly status = document.querySelector<HTMLElement>("#text-status")!;
-  private lines: TextLine[] = [];
   /** The capture being read; a newer request or closing makes older answers stale. */
   private showing: string | null = null;
   private returnFocus: HTMLElement | null = null;
@@ -40,7 +39,6 @@ export class TextView {
 
   async show(captureId: string): Promise<void> {
     this.showing = captureId;
-    this.lines = [];
     this.list.replaceChildren();
     this.empty.hidden = true;
     this.copyButton.disabled = true;
@@ -59,7 +57,6 @@ export class TextView {
       return;
     }
     if (this.showing !== captureId) return;
-    this.lines = lines;
     this.list.replaceChildren(
       ...lines.map((line) => {
         const item = document.createElement("li");
@@ -80,9 +77,11 @@ export class TextView {
     this.returnFocus?.focus();
   }
 
+  /** Rust joins the cached lines itself, the same way the menu bar's copy does. */
   private async copyAll(): Promise<void> {
+    if (!this.showing) return;
     try {
-      await invoke("copy_text", { text: this.lines.map((line) => line.text).join("\n") });
+      await invoke<number>("copy_capture_text", { id: this.showing });
       this.showStatus("Texto copiado al portapapeles");
     } catch (error) {
       this.showStatus(`No se pudo copiar el texto: ${error}`, true);

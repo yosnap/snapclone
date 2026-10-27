@@ -20,12 +20,13 @@ import { highlightDrops, listenNotices, openClipboard, openFile } from "./open-i
 import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
-import { bindReopen, reportLoaded } from "./reopen-last";
+import { bindReopen, reopenLast } from "./reopen-last";
 import { loadSettings, saveSetting } from "./settings";
 import { SettingsView } from "./settings-view";
 import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
 import { TextView } from "./text-view";
+import { isEditableTarget } from "./ui-helpers";
 import { requestWallpaper, wallpaperError } from "./wallpaper";
 
 type CaptureReady = { id: string; scale: number };
@@ -155,7 +156,6 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   emptyState.hidden = true;
   canvas.hidden = false;
   showStatus("");
-  reportLoaded(true);
   syncExportButtons();
   // The document's own style, or the defaults for a new capture; neither is persisted here.
   applyStoredStyle(style, saved?.style ?? defaults.style);
@@ -198,7 +198,6 @@ function captureDeleted(id: string): void {
   canvas.hidden = true;
   emptyState.hidden = false;
   syncExportButtons();
-  reportLoaded(false);
 }
 
 function balanceOf(source: Capture): { result: BalanceResult; capture: Capture | null } {
@@ -445,6 +444,14 @@ document.addEventListener("keydown", (event) => {
   if (settingsView.isOpen) return;
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
   const inForm = editingText || event.target instanceof HTMLSelectElement;
+  // ⇧⌘Z: native redo in a field, the editor's redo with a capture, otherwise reopen the last one.
+  if (event.metaKey && event.shiftKey && !event.altKey && !event.ctrlKey && event.key.toLowerCase() === "z") {
+    if (isEditableTarget(event.target)) return;
+    event.preventDefault();
+    if (capture) editor.handleKey(event);
+    else if (!outsideTauri) reopenLast(showStatus);
+    return;
+  }
   if (capture && !inForm && editor.handleKey(event)) {
     event.preventDefault();
     return;
@@ -456,7 +463,7 @@ document.addEventListener("keydown", (event) => {
   } else if (event.key === "s") {
     event.preventDefault();
     saveImage();
-  } else if (event.key === "v" && !editingText && !outsideTauri) {
+  } else if (event.key === "v" && !isEditableTarget(event.target) && !outsideTauri) {
     event.preventDefault();
     openClipboard(showStatus);
   }
@@ -473,8 +480,6 @@ if (!outsideTauri) {
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
   listenNotices(showStatus);
-  // A reloaded page starts empty, whatever Rust last heard.
-  reportLoaded(false);
   bindReopen((id) => {
     historyView.close();
     textView.close();

@@ -146,6 +146,34 @@ pub fn joined(lines: &[TextLine]) -> String {
     lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>().join("\n")
 }
 
+/// Puts the capture's recognized text on the pasteboard, one line per recognized line, and
+/// returns how many lines it copied. Nothing is copied when there is no text.
+async fn copy_text_of(app: &AppHandle, id: &str) -> Result<usize, String> {
+    let analysis = analyze(app, id).await.map_err(|error| format!("No se pudo leer el texto: {error}"))?;
+    if analysis.lines.is_empty() {
+        return Err("No se ha encontrado texto en esta captura".into());
+    }
+    let text = joined(&analysis.lines);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    // AppKit's pasteboard is used from the main thread, like the editor's image copy.
+    app.run_on_main_thread(move || {
+        let _ = sender.send(export::write_text_to_pasteboard(&text));
+    })
+    .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || receiver.recv())
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("No se pudo copiar el texto: {error}"))?;
+    Ok(analysis.lines.len())
+}
+
+/// "Copiar todo" in the detected text view.
+#[tauri::command]
+pub async fn copy_capture_text(app: AppHandle, id: String) -> Result<usize, String> {
+    copy_text_of(&app, &id).await
+}
+
 /// "Copiar texto de la última captura" in the menu bar icon. Errors bring the editor forward
 /// with the reason; a successful copy only updates its status line, without stealing focus.
 pub fn copy_latest_text(app: &AppHandle) {
@@ -156,22 +184,9 @@ pub fn copy_latest_text(app: &AppHandle) {
             Ok(None) => return editor_window::notify(&app, "Todavía no hay ninguna captura de la que copiar el texto", false),
             Err(error) => return editor_window::notify(&app, &format!("No se pudo leer el historial: {error}"), true),
         };
-        let lines = match analyze(&app, &id).await {
-            Ok(analysis) if analysis.lines.is_empty() => {
-                return editor_window::notify(&app, "No se ha encontrado texto en la última captura", false);
-            }
-            Ok(analysis) => analysis.lines.clone(),
-            Err(error) => return editor_window::notify(&app, &format!("No se pudo leer el texto: {error}"), true),
-        };
-        let text = joined(&lines);
-        let handle = app.clone();
-        // AppKit's pasteboard is used from the main thread, like the editor's copy.
-        let scheduled = app.run_on_main_thread(move || match export::write_text_to_pasteboard(&text) {
-            Ok(()) => editor_window::status(&handle, &format!("Texto de la última captura copiado ({} líneas)", lines.len())),
-            Err(error) => editor_window::notify(&handle, &format!("No se pudo copiar el texto: {error}"), true),
-        });
-        if let Err(error) = scheduled {
-            eprintln!("text copy could not be scheduled: {error}");
+        match copy_text_of(&app, &id).await {
+            Ok(count) => editor_window::status(&app, &format!("Texto de la última captura copiado ({count} líneas)")),
+            Err(error) => editor_window::notify(&app, &error, true),
         }
     });
 }

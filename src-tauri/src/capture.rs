@@ -168,12 +168,15 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
     // ordered out, which does not activate the app either. Every capture kind keeps this:
     // the selector shoots the monitors before opening its overlays (which the scroll capture
     // also starts from), and the full-screen capture shows the editor only after the shot.
-    if let Some(window) = app.get_webview_window(EDITOR_WINDOW)
-        && window.is_visible().unwrap_or(false)
-    {
-        editor_window::hide(&app);
+    let was_visible = editor_window::is_visible(&app);
+    // Ordered out even when it reports itself invisible: after ⌘H it still belongs on screen,
+    // and unhiding the app below would bring it back into the shot.
+    editor_window::hide(&app);
+    if was_visible {
         tokio::time::sleep(HIDE_SETTLE).await;
     }
+    // Every kind opens its overlays (or shows the editor) in a hidden app otherwise.
+    editor_window::unhide_without_activation(&app);
 
     // The own selector keeps `in_progress` set until the selection ends; see `selection_ended`.
     let own = tauri::async_runtime::spawn_blocking({

@@ -76,18 +76,6 @@ fn write_png_to_pasteboard(bytes: &[u8]) -> Result<(), String> {
     }
 }
 
-/// Longer text is not what a capture holds; refusing it keeps the pasteboard sane.
-const TEXT_MAX_BYTES: usize = 1024 * 1024;
-
-/// "Copiar todo" in the detected text view. Synchronous so AppKit runs on the main thread.
-#[tauri::command]
-pub fn copy_text(text: String) -> Result<(), String> {
-    if text.len() > TEXT_MAX_BYTES {
-        return Err("the text is too long".into());
-    }
-    write_text_to_pasteboard(&text)
-}
-
 /// Replaces the pasteboard contents with plain text. Call it on the main thread.
 #[cfg(target_os = "macos")]
 pub fn write_text_to_pasteboard(text: &str) -> Result<(), String> {

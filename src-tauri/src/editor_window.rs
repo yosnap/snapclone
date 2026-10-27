@@ -1,27 +1,19 @@
 //! The editor window and the Dock icon. The window starts hidden and is shown centred on the
 //! main display, so it never opens behind other apps or on a monitor that is gone.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 use crate::{
     capture::EDITOR_WINDOW,
     geometry::{self, Rect},
-    history, prefs, tray,
+    history, prefs,
 };
 
 const DOCK_HIDDEN_KEY: &str = "hideDockIcon";
 const SETTINGS_EVENT: &str = "open-settings";
 const NOTICE_EVENT: &str = "editor-notice";
 const REOPEN_EVENT: &str = "reopen-capture";
-/// ⇧⌘Z pressed while the editor is visible and empty; the page tells redoing text from reopening.
-const REOPEN_SHORTCUT_EVENT: &str = "reopen-shortcut";
-
-/// Whether the editor shows a capture, as the page reports it; ⇧⌘Z only reopens without one.
-#[derive(Default)]
-pub struct EditorContent(AtomicBool);
 
 #[derive(Clone, Serialize)]
 struct Notice<'a> {
@@ -41,7 +33,6 @@ pub fn show(app: &AppHandle, recenter: bool) {
         eprintln!("editor window could not be shown: {error}");
     }
     let _ = window.set_focus();
-    sync_reopen_shortcut(app, true);
 }
 
 /// Hides the editor; the app keeps running in the menu bar and the Dock.
@@ -49,7 +40,26 @@ pub fn hide(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
         let _ = window.hide();
     }
-    sync_reopen_shortcut(app, false);
+}
+
+/// Whether the editor is on screen. A hidden app (⌘H or "Ocultar Snapclone") counts as not.
+pub fn is_visible(app: &AppHandle) -> bool {
+    app.get_webview_window(EDITOR_WINDOW).is_some_and(|window| window.is_visible().unwrap_or(false))
+}
+
+/// After "Ocultar Snapclone" the whole app is hidden, and so would be every overlay a
+/// capture opens. This unhides it without activating it, which keeps the capture invariant
+/// (nothing activates Snapclone before the shot); queued on the main thread after any hide
+/// requested before it, so a hidden editor stays out of the shot.
+pub fn unhide_without_activation(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = app.run_on_main_thread(|| {
+        if let Some(main_thread) = objc2::MainThreadMarker::new() {
+            objc2_app_kit::NSApplication::sharedApplication(main_thread).unhideWithoutActivation();
+        }
+    }) {
+        eprintln!("the app could not be unhidden: {error}");
+    }
 }
 
 /// "Ocultar Snapclone" (⌘Q): closes every window and gives the focus back to the previous
@@ -71,21 +81,6 @@ pub fn hide_app(app: &AppHandle) {
     }
 }
 
-/// ⇧⌘Z is redo while a capture is open in the visible editor, so the app menu only takes it
-/// for "Reabrir última captura" when the editor is hidden or empty. Visibility is passed in
-/// because a hide requested off the main thread may not have happened yet.
-pub fn sync_reopen_shortcut(app: &AppHandle, visible: bool) {
-    let loaded = app.state::<EditorContent>().0.load(Ordering::SeqCst);
-    tray::set_reopen_shortcut(app, !(visible && loaded));
-}
-
-#[tauri::command]
-pub fn set_editor_loaded(app: AppHandle, state: tauri::State<'_, EditorContent>, loaded: bool) {
-    state.0.store(loaded, Ordering::SeqCst);
-    let visible = app.get_webview_window(EDITOR_WINDOW).is_some_and(|window| window.is_visible().unwrap_or(false));
-    sync_reopen_shortcut(&app, visible);
-}
-
 /// Opens the newest capture of the history with its document, in the editor.
 pub fn reopen_last(app: &AppHandle) {
     match history::latest_id(app) {
@@ -97,17 +92,6 @@ pub fn reopen_last(app: &AppHandle) {
         }
         Ok(None) => notify(app, "Todavía no hay ninguna captura que reabrir", false),
         Err(error) => notify(app, &format!("No se pudo leer el historial: {error}"), true),
-    }
-}
-
-/// The app menu's ⇧⌘Z. With the editor hidden it reopens at once; with it visible (and
-/// empty, or the shortcut would be off) the page decides, so redo still works in its fields.
-pub fn reopen_shortcut(app: &AppHandle) {
-    let visible = app.get_webview_window(EDITOR_WINDOW).is_some_and(|window| window.is_visible().unwrap_or(false));
-    if !visible {
-        reopen_last(app);
-    } else if let Err(error) = app.emit_to(EDITOR_WINDOW, REOPEN_SHORTCUT_EVENT, ()) {
-        eprintln!("reopen-shortcut emit failed: {error}");
     }
 }
 

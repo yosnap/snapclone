@@ -1,8 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-
-type Notify = (message: string, isError?: boolean) => void;
+import type { Notify } from "./ui-helpers";
 
 /**
  * Opening images that were not captured here. Rust reads the pasteboard and does the
