@@ -13,16 +13,16 @@
       <header class="titlebar" data-tauri-drag-region>
         <div class="tool-pills" id="toolbar" role="toolbar" aria-label="Anotaciones" data-tauri-drag-region>
           <button type="button" class="pill tool-pill" data-tool="text" style="--pill-width: 54px" title="Texto (1): pulsa otra vez para cambiar el tamaño">
-            <span data-icon="text"></span><span class="pill-number">1</span>
+            <span data-icon="text" data-icon-size="20"></span><span class="pill-number">1</span>
           </button>
           <button type="button" class="pill tool-pill" data-tool="arrow" style="--pill-width: 84px" title="Flecha (2): pulsa otra vez para cambiar el estilo">
-            <span data-icon="arrow"></span><span class="pill-number">2</span>
+            <span data-icon="arrow" data-icon-size="22"></span><span class="pill-number">2</span>
           </button>
           <button type="button" class="pill tool-pill" data-tool="redact" style="--pill-width: 286px" title="Redactar (3)">
-            <span data-icon="eraser"></span><span class="pill-number">3</span>
+            <span data-icon="eraser" data-icon-size="22"></span><span class="pill-number">3</span>
           </button>
           <button type="button" class="pill tool-pill" data-tool="shape" style="--pill-width: 127px" title="Formas (4): pulsa otra vez para cambiar la forma">
-            <span data-icon="shapes"></span><span class="pill-number">4</span>
+            <span data-icon="shapes" data-icon-size="22"></span><span class="pill-number">4</span>
           </button>
           <button type="button" class="pill color-pill" id="color-button" title="Color de las anotaciones" aria-haspopup="dialog">
             <span class="color-chip" id="color-chip"></span>
@@ -59,7 +59,7 @@
               <button type="button" class="bar-button" id="save-button" disabled>Guardar ⌘S</button>
               <button type="button" class="bar-button" id="save-as-button" disabled>Guardar como…</button>
               <button type="button" class="bar-button zoom-button" id="zoom-button" aria-haspopup="menu">
-                <span id="zoom-label">100%</span><span data-icon="chevron-down" data-icon-size="12"></span>
+                <span id="zoom-label">100%</span><span data-icon="chevron-down" data-icon-size="13"></span>
               </button>
               <button type="button" class="bar-button" id="more-button" aria-haspopup="menu">Más…</button>
             </div>
@@ -74,7 +74,7 @@
               <span id="preset-label">Tu preset</span><span data-icon="chevron-up-down" data-icon-size="12"></span>
             </button>
             <button type="button" class="icon-button" id="preset-delete" title="Borrar preset">
-              <span data-icon="trash" data-icon-size="16"></span>
+              <span data-icon="trash" data-icon-size="17"></span>
             </button>
           </div>
           <div class="inspector-separator" role="separator"></div>
@@ -123,7 +123,7 @@
             <label class="checkbox"><input type="checkbox" id="redact-toggle" />Redactar datos sensibles</label>
             <span class="hint" id="redact-count">(encontrados 0)</span>
             <button type="button" class="gear-button" id="redact-settings" title="Ajustes de redacción" aria-haspopup="dialog">
-              <span data-icon="gear" data-icon-size="17"></span>
+              <span data-icon="gear" data-icon-size="19"></span>
             </button>
           </div>
 

@@ -4,7 +4,7 @@
  * `import.meta.env.DEV`, so production builds leave it out.
  */
 const WIDTH = 1000;
-const HEIGHT = 380;
+const HEIGHT = 376;
 const SCALE = 2;
 
 export async function loadPreview(show: (image: HTMLImageElement) => void): Promise<void> {
@@ -38,7 +38,8 @@ function drawSample(ctx: CanvasRenderingContext2D): void {
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
   ctx.fillStyle = "#ffffff";
   ctx.beginPath();
-  ctx.roundRect(30, 24, WIDTH - 60, HEIGHT - 24, 12);
+  // A card with the same margin on every side, so "Balance" has a uniform edge to work with.
+  ctx.roundRect(30, 24, WIDTH - 60, HEIGHT - 48, 12);
   ctx.fill();
   ctx.strokeStyle = "#e3e3e6";
   ctx.stroke();

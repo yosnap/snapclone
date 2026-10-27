@@ -40,8 +40,8 @@
 
 .drag-pill {
   gap: 4px;
-  padding: 0 10px 0 6px;
-  background: var(--control-hover);
+  padding: 0 10px 0 5px;
+  background: var(--control-pressed);
   box-shadow: inset 0 0 0 1px var(--pill-border);
   cursor: grab;
 }
@@ -49,6 +49,10 @@
 .drag-pill[aria-disabled="true"] {
   opacity: 0.45;
   cursor: default;
+}
+
+.zoom-button .icon {
+  color: var(--text);
 }
 
 .zoom-button {
