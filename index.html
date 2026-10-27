@@ -10,11 +10,56 @@
 
   <body>
     <main class="editor">
-      <section id="empty-state" class="empty-state">
-        <p>Pulsa <kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd> o usa el icono de la barra de menús.</p>
-        <button id="capture-button" type="button">Capturar región</button>
+      <section class="stage">
+        <div id="empty-state" class="empty-state">
+          <p>Pulsa <kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd> o usa el icono de la barra de menús.</p>
+          <button type="button" data-action="capture">Capturar región</button>
+        </div>
+        <canvas id="editor-canvas" hidden></canvas>
       </section>
-      <canvas id="editor-canvas" hidden></canvas>
+
+      <aside id="sidebar" class="sidebar">
+        <fieldset>
+          <legend>Fondo</legend>
+          <div id="background-swatches" class="swatches"></div>
+          <div class="row">
+            <label class="inline">Color <input type="color" id="solid-color" value="#1e293b" /></label>
+            <label class="file-button">
+              Imagen…
+              <input type="file" id="background-file" accept="image/*" hidden />
+            </label>
+          </div>
+        </fieldset>
+
+        <label class="slider">
+          <span>Margen <output data-for="padding"></output></span>
+          <input type="range" name="padding" min="0" max="200" />
+        </label>
+        <label class="slider">
+          <span>Esquinas <output data-for="radius"></output></span>
+          <input type="range" name="radius" min="0" max="40" />
+        </label>
+        <label class="slider">
+          <span>Sombra <output data-for="shadow"></output></span>
+          <input type="range" name="shadow" min="0" max="100" />
+        </label>
+
+        <label class="field">
+          <span>Proporción</span>
+          <select name="ratio"></select>
+        </label>
+        <label class="field">
+          <span>Marca de agua</span>
+          <input type="text" name="watermark" placeholder="@tu_usuario" />
+        </label>
+
+        <div class="actions">
+          <button id="copy-button" type="button" disabled>Copiar <kbd>⌘C</kbd></button>
+          <button id="save-button" type="button" class="secondary" disabled>Guardar <kbd>⌘S</kbd></button>
+          <button type="button" class="secondary" data-action="capture">Nueva captura</button>
+        </div>
+        <p id="status" class="status" role="status"></p>
+      </aside>
     </main>
   </body>
 </html>
