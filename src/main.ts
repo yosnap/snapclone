@@ -20,6 +20,8 @@ import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-s
 import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
 import { loadSettings, saveSetting } from "./settings";
+import { SettingsView } from "./settings-view";
+import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
 
 type CaptureReady = { id: string; scale: number };
@@ -34,6 +36,7 @@ const toolbar = document.querySelector<HTMLElement>("#toolbar")!;
 const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
 const balanceToggle = document.querySelector<HTMLInputElement>("#balance-toggle")!;
 const historyButton = document.querySelector<HTMLButtonElement>("#history-button")!;
+const settingsButton = document.querySelector<HTMLButtonElement>("#settings-button")!;
 
 const style = defaultStyle();
 const redactSettings = defaultRedactSettings();
@@ -373,11 +376,32 @@ const historyView = new HistoryView({
 });
 historyButton.addEventListener("click", () => historyView.show());
 
+/** The empty editor names the zone shortcut as it is configured right now. */
+function showZoneShortcut(entries: ShortcutEntry[]): void {
+  const hint = document.querySelector<HTMLElement>("#empty-hint")!;
+  const zone = entries.find((entry) => entry.kind === "region");
+  if (!zone?.label) {
+    hint.textContent = "La captura de zona no tiene atajo: usa el botón o el icono de la barra de menús.";
+    return;
+  }
+  const key = document.createElement("kbd");
+  key.textContent = zone.label;
+  hint.replaceChildren("Pulsa ", key, " o usa el icono de la barra de menús.");
+}
+
+const settingsView = new SettingsView(showZoneShortcut);
+function openSettings(): void {
+  historyView.close();
+  settingsView.show().catch((error) => showStatus(`No se pudieron abrir los ajustes: ${error}`, true));
+}
+settingsButton.addEventListener("click", openSettings);
+
 document.addEventListener("keydown", (event) => {
   if (historyView.isOpen) {
     if (event.key === "Escape") historyView.close();
     return;
   }
+  if (settingsView.isOpen) return;
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
   const inForm = editingText || event.target instanceof HTMLSelectElement;
   if (capture && !inForm && editor.handleKey(event)) {
@@ -395,10 +419,16 @@ document.addEventListener("keydown", (event) => {
 });
 
 if (!outsideTauri) {
+  loadShortcuts()
+    .then(showZoneShortcut)
+    .catch((error) => console.error("shortcuts could not be read", error));
   listen<CaptureReady>("capture-ready", (event) => {
     historyView.close();
+    settingsView.close();
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
+  // "Ajustes…" in the app menu (⌘,) and in the menu bar icon.
+  listen("open-settings", openSettings);
   listen<string>("capture-failed", (event) => {
     historyView.close();
     showStatus(`No se pudo hacer la captura: ${event.payload}`, true);

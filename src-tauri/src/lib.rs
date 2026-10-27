@@ -1,29 +1,38 @@
 mod capture;
+#[cfg(target_os = "macos")]
+mod capture_below;
+mod editor_window;
 mod export;
+mod geometry;
 mod history;
 mod images;
+mod prefs;
 mod redact;
+mod screen;
+mod scroll;
 mod selector;
+mod shortcuts;
+mod stitch;
 mod tray;
 
-use tauri::{Manager, WindowEvent};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri::{Manager, RunEvent, WindowEvent};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let capture_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit2);
-
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(capture::Captures::default())
         .manage(export::PendingSave::default())
         .manage(selector::Selection::default())
+        .manage(shortcuts::Shortcuts::default())
+        .manage(scroll::ScrollCapture::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, shortcut, event| {
-                    if event.state() == ShortcutState::Pressed && shortcut == &capture_shortcut {
-                        capture::start(app.clone());
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        shortcuts::on_shortcut(app, shortcut);
                     }
                 })
                 .build(),
@@ -34,13 +43,19 @@ pub fn run() {
                 responder.respond(capture::serve(&app, &request));
             });
         })
-        // Menu bar app: closing the editor hides it instead of quitting.
+        .on_menu_event(|app, event| tray::on_menu_event(app, event.id.as_ref()))
+        // Closing the editor hides it; the app keeps running in the menu bar and the Dock.
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } if window.label() == capture::EDITOR_WINDOW => {
                 api.prevent_close();
                 let _ = window.hide();
             }
-            WindowEvent::Destroyed => selector::on_window_destroyed(window.app_handle(), window.label()),
+            // A shortcut recorder left open never keeps the global shortcuts paused.
+            WindowEvent::Focused(false) if window.label() == capture::EDITOR_WINDOW => shortcuts::resume(window.app_handle()),
+            WindowEvent::Destroyed => {
+                selector::on_window_destroyed(window.app_handle(), window.label());
+                scroll::on_window_destroyed(window.app_handle(), window.label());
+            }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
@@ -57,16 +72,34 @@ pub fn run() {
             selector::selector_frame,
             selector::cancel_selection,
             selector::finish_selection,
-            selector::finish_window
+            selector::finish_window,
+            editor_window::get_dock_hidden,
+            editor_window::set_dock_hidden,
+            shortcuts::get_shortcuts,
+            shortcuts::set_shortcut,
+            shortcuts::pause_shortcuts,
+            scroll::finish_scroll,
+            scroll::cancel_scroll
         ])
-        .setup(move |app| {
+        .setup(|app| {
             app.manage(history::History::open(app.handle()));
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-            tray::build(app.handle())?;
-            app.global_shortcut().register(capture_shortcut)?;
+            app.set_activation_policy(editor_window::activation_policy(editor_window::dock_hidden(app.handle())));
+            let registered = shortcuts::init(app.handle());
+            tray::build(app.handle(), &registered)?;
+            // ⌘, still works from the editor's button and the menu bar icon without it.
+            if let Err(error) = tray::add_settings_to_app_menu(app.handle()) {
+                eprintln!("settings could not be added to the app menu: {error}");
+            }
+            editor_window::show(app.handle(), true);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // A click on the Dock icon, or opening the app again while it runs.
+            if let RunEvent::Reopen { .. } = event {
+                editor_window::show(app, false);
+            }
+        });
 }

@@ -7,7 +7,7 @@ import { emit, listen } from "@tauri-apps/api/event";
  * window; Esc cancels. Coordinates are CSS pixels, which equal points in these windows.
  */
 type WindowRect = { id: number; x: number; y: number; width: number; height: number };
-type OverlayInfo = { pixelWidth: number; pixelHeight: number; windows: WindowRect[] };
+type OverlayInfo = { kind: "region" | "window" | "scroll"; pixelWidth: number; pixelHeight: number; windows: WindowRect[] };
 type Point = { x: number; y: number };
 type Rect = { x: number; y: number; width: number; height: number };
 
@@ -25,6 +25,8 @@ const ctx = canvas.getContext("2d")!;
 let frame: ImageBitmap | null = null;
 let windows: WindowRect[] = [];
 let windowMode = false;
+/** A scroll capture needs a zone, so window mode is not offered. */
+let zoneOnly = false;
 let pointer: Point | null = null;
 let dragStart: Point | null = null;
 /** Set once a result was sent, so nothing is sent twice while the overlays close. */
@@ -41,14 +43,17 @@ async function init(): Promise<void> {
   windows = info.windows;
   canvas.width = info.pixelWidth;
   canvas.height = info.pixelHeight;
-  await listen<boolean>(MODE_EVENT, (event) => {
-    windowMode = event.payload === true;
-    dragStart = null;
-    hint.textContent = windowMode
-      ? "Haz clic en una ventana · Espacio: zona · Esc: cancelar"
-      : "Arrastra para elegir una zona · Espacio: ventana · Esc: cancelar";
-    scheduleDraw();
-  });
+  zoneOnly = info.kind === "scroll";
+  setWindowMode(info.kind === "window");
+  await listen<boolean>(MODE_EVENT, (event) => setWindowMode(event.payload === true));
+}
+
+function setWindowMode(enabled: boolean): void {
+  windowMode = enabled && !zoneOnly;
+  dragStart = null;
+  if (zoneOnly) hint.textContent = "Arrastra para elegir la zona que vas a desplazar · Esc: cancelar";
+  else if (windowMode) hint.textContent = "Haz clic en una ventana · Espacio: zona · Esc: cancelar";
+  else hint.textContent = "Arrastra para elegir una zona · Espacio: ventana · Esc: cancelar";
   scheduleDraw();
 }
 
@@ -161,7 +166,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     event.preventDefault();
     finish("cancel_selection", {});
-  } else if (event.key === " " && !event.repeat) {
+  } else if (event.key === " " && !event.repeat && !zoneOnly) {
     event.preventDefault();
     emit(MODE_EVENT, !windowMode).catch((error) => console.error("window mode could not be shared", error));
   }

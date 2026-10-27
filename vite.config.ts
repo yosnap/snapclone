@@ -10,10 +10,10 @@ export default defineConfig(() => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // The region selector overlays load their own page.
+  // The region selector overlays and the scroll capture windows load their own pages.
   build: {
     rollupOptions: {
-      input: { main: "index.html", selector: "selector.html" },
+      input: { main: "index.html", selector: "selector.html", scroll: "scroll.html" },
     },
   },
   // 2. tauri expects a fixed port, fail if that port is not available
