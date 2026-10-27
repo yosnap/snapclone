@@ -499,6 +499,8 @@ async function init(): Promise<void> {
   redactPreferences.enabled = settings.autoRedact;
   redactPreferences.mode = settings.redactMode;
   editor.setColor(settings.annotationColor);
+  editor.options = settings.toolOptions;
+  editor.onOptionsChange = (options) => saveSetting("toolOptions", options);
 
   refreshControls = bindInspector(sidebar, style, {
     changed: styleChanged,

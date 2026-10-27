@@ -2,18 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AnnotationEditor, Tool } from "./annotation-editor";
 import { ANNOTATION_COLORS } from "./annotations";
 import { closePopover, isOpenFor, openPopover } from "./popover";
+import { toolOptionsPanel } from "./tool-options";
 import type { Notify } from "./ui-helpers";
 
-/** The pills' tools, as the editor names them. */
-const PILL_TOOLS: Record<string, Tool> = { text: "text", arrow: "arrow", redact: "pixelate", shape: "rect" };
-
-const TIPS = [
-  "Tip: usa las teclas numéricas (1, 2, 3, 4)",
-  "Pulsa «1» para añadir texto",
-  "Pulsa «2» para añadir una flecha",
-  "Pulsa «3» para redactar una zona",
-  "Pulsa «4» para añadir una forma",
-];
+const DEFAULT_TIP = "Tip: usa las teclas numéricas (1, 2, 3, 4)";
+/** What the tip says while each tool is active. */
+const TOOL_TIPS: Record<Tool, string> = {
+  select: DEFAULT_TIP,
+  text: "Haz clic para escribir · pulsa «1» otra vez para cambiar el tamaño",
+  arrow: "Arrastra para dibujar una flecha · pulsa «2» otra vez para cambiar el estilo",
+  redact: "Arrastra sobre lo que quieras tapar · pulsa «3» otra vez para cambiar el modo",
+  shape: "Arrastra para dibujar · pulsa «4» otra vez para cambiar la forma",
+};
 
 type ToolbarHandlers = {
   colorChanged: (color: string) => void;
@@ -34,16 +34,24 @@ export function bindTopToolbar(root: HTMLElement, editor: AnnotationEditor, hand
 
   const sync = () => {
     for (const pill of pills) {
-      pill.setAttribute("aria-pressed", String(PILL_TOOLS[pill.dataset.tool!] === editor.tool));
+      pill.setAttribute("aria-pressed", String(pill.dataset.tool === editor.tool));
     }
     colorChip.style.background = editor.color;
+    tipButton.textContent = TOOL_TIPS[editor.tool];
   };
 
   for (const pill of pills) {
     pill.addEventListener("click", () => {
-      const tool = PILL_TOOLS[pill.dataset.tool!];
-      // Clicking the active tool again goes back to selecting and moving.
-      editor.setTool(editor.tool === tool ? "select" : tool);
+      const tool = pill.dataset.tool as Tool;
+      // A click picks the tool; a second click shows its options.
+      if (editor.tool !== tool) {
+        closePopover();
+        editor.setTool(tool);
+      } else if (isOpenFor(pill)) {
+        closePopover();
+      } else {
+        openPopover(pill, toolOptionsPanel(tool, editor));
+      }
       sync();
     });
   }
@@ -60,10 +68,10 @@ export function bindTopToolbar(root: HTMLElement, editor: AnnotationEditor, hand
     }));
   });
 
-  let tip = 0;
+  // Clicking the tip goes back to selecting and moving annotations.
   tipButton.addEventListener("click", () => {
-    tip = (tip + 1) % TIPS.length;
-    tipButton.textContent = TIPS[tip];
+    editor.setTool("select");
+    sync();
   });
 
   root.querySelector<HTMLButtonElement>("#feedback-button")!.addEventListener("click", () => {

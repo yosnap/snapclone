@@ -1,4 +1,4 @@
-import type { Annotation, Point } from "./annotations";
+import type { Annotation, ArrowHead, Point } from "./annotations";
 import { REDACT_CATEGORIES, type RedactCategory } from "./auto-redact";
 import { type StoredStyle, isHexColor, isRecord, parseStoredStyle } from "./persisted-style";
 
@@ -19,6 +19,9 @@ export type CaptureDocument = {
 const MAX_ANNOTATIONS = 1000;
 const MAX_TEXT_LENGTH = 1000;
 const MAX_COORDINATE = 1e6;
+const MAX_STROKE = 40;
+const MAX_TEXT_SIZE = 200;
+const ARROW_HEADS = new Set<string>(["filled", "open", "double"] satisfies ArrowHead[]);
 const CATEGORIES = new Set<string>(REDACT_CATEGORIES.map((category) => category.id));
 
 /** Validates a document read back from the database; invalid annotations are skipped. */
@@ -42,19 +45,26 @@ function parseAnnotation(value: unknown): Annotation | null {
   if (!isRecord(value) || typeof value.id !== "string" || !value.id) return null;
   const { id } = value;
   switch (value.kind) {
-    case "arrow": {
+    case "arrow":
+    case "line": {
       const from = parsePoint(value.from);
       const to = parsePoint(value.to);
-      return from && to && isHexColor(value.color) ? { id, kind: "arrow", color: value.color, from, to } : null;
+      if (!from || !to || !isHexColor(value.color)) return null;
+      if (value.kind === "line") return { id, kind: "line", color: value.color, from, to };
+      const width = parseSize(value.width, MAX_STROKE);
+      const head = typeof value.head === "string" && ARROW_HEADS.has(value.head) ? (value.head as ArrowHead) : undefined;
+      return { id, kind: "arrow", color: value.color, from, to, ...(width ? { width } : {}), ...(head ? { head } : {}) };
     }
-    case "rect": {
+    case "rect":
+    case "oval": {
       const box = parseBox(value);
-      return box && isHexColor(value.color) ? { id, kind: "rect", color: value.color, ...box } : null;
+      return box && isHexColor(value.color) ? { id, kind: value.kind, color: value.color, ...box } : null;
     }
     case "text": {
       const at = parsePoint(value.at);
       if (!at || !isHexColor(value.color) || typeof value.text !== "string" || !value.text) return null;
-      return { id, kind: "text", color: value.color, at, text: value.text.slice(0, MAX_TEXT_LENGTH) };
+      const size = parseSize(value.size, MAX_TEXT_SIZE);
+      return { id, kind: "text", color: value.color, at, text: value.text.slice(0, MAX_TEXT_LENGTH), ...(size ? { size } : {}) };
     }
     case "pixelate": {
       const box = parseBox(value);
@@ -68,6 +78,11 @@ function parseAnnotation(value: unknown): Annotation | null {
     default:
       return null;
   }
+}
+
+/** An optional positive size; missing or invalid ones fall back to the default. */
+function parseSize(value: unknown, max: number): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= max ? value : null;
 }
 
 function isCoordinate(value: unknown): value is number {

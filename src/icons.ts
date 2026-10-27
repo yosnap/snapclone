@@ -20,6 +20,7 @@ const PATHS: Record<string, string> = {
   rect: `<rect ${STROKE} x="4" y="6" width="16" height="12" rx="1"/>`,
   oval: `<ellipse ${STROKE} cx="12" cy="12" rx="8" ry="6"/>`,
   line: `<path ${STROKE} d="M5 19 19 5"/>`,
+  "arrow-filled": `<path ${STROKE} d="M5 19 15 9"/><path fill="currentColor" d="M19.5 4.5 17.6 13 11 6.4z"/>`,
   "arrow-open": `<path ${STROKE} d="M5 19 19 5M11 5h8v8"/>`,
   "arrow-double": `<path ${STROKE} d="M6.5 17.5 17.5 6.5M5 12v7h7M12 5h7v7"/>`,
   pixelate: `<g fill="currentColor"><rect x="4" y="4" width="5" height="5" opacity=".9"/><rect x="9.5" y="4" width="5" height="5" opacity=".4"/><rect x="15" y="4" width="5" height="5" opacity=".7"/><rect x="4" y="9.5" width="5" height="5" opacity=".5"/><rect x="9.5" y="9.5" width="5" height="5" opacity=".9"/><rect x="15" y="9.5" width="5" height="5" opacity=".3"/><rect x="4" y="15" width="5" height="5" opacity=".7"/><rect x="9.5" y="15" width="5" height="5" opacity=".3"/><rect x="15" y="15" width="5" height="5" opacity=".8"/></g>`,

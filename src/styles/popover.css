@@ -171,3 +171,39 @@
 .background-grid.compact .background-name {
   display: none;
 }
+
+.tool-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.option-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.segmented {
+  display: flex;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--control);
+}
+
+.segment {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.segment[aria-checked="true"] {
+  background: var(--window);
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.14);
+}

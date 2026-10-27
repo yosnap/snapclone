@@ -1,33 +1,59 @@
 import {
   ANNOTATION_COLORS,
   type Annotation,
-  type AnnotationKind,
+  type ArrowHead,
   FONT_STACK,
   type PixelateAnnotation,
   FONT_WEIGHT,
   type Point,
-  TEXT_SIZE,
+  TEXT_SIZES,
   boxFromPoints,
   hitTest,
   moved,
 } from "./annotations";
-import type { RedactCategory } from "./auto-redact";
+import type { RedactCategory, RedactMode } from "./auto-redact";
 import type { Layout, Overlay } from "./render";
 
-export type Tool = "select" | AnnotationKind;
+export type Tool = "select" | "text" | "arrow" | "redact" | "shape";
+export type TextSize = keyof typeof TEXT_SIZES;
+export type ShapeKind = "rect" | "oval" | "line";
+/** Arrow strokes in points: thin, medium and thick. */
+export const ARROW_WIDTHS = [2, 4, 7] as const;
+
+/** What each tool draws; repeating a tool's number key steps through its first option. */
+export type ToolOptions = {
+  textSize: TextSize;
+  arrowHead: ArrowHead;
+  arrowWidth: number;
+  redactMode: RedactMode;
+  shape: ShapeKind;
+};
+
+export const TEXT_SIZE_ORDER: TextSize[] = ["small", "medium", "large"];
+export const ARROW_HEAD_ORDER: ArrowHead[] = ["filled", "open", "double"];
+export const SHAPE_ORDER: ShapeKind[] = ["rect", "oval", "line"];
+export const REDACT_MODE_ORDER: RedactMode[] = ["pixelate", "solid"];
+
+export function defaultToolOptions(): ToolOptions {
+  return { textSize: "medium", arrowHead: "filled", arrowWidth: ARROW_WIDTHS[1], redactMode: "pixelate", shape: "rect" };
+}
 
 /** Tool shortcuts: the numbers on the toolbar pills, and the letters of earlier versions. */
 const TOOL_KEYS: Record<string, Tool> = {
   "1": "text",
   "2": "arrow",
-  "3": "pixelate",
-  "4": "rect",
+  "3": "redact",
+  "4": "shape",
   v: "select",
   a: "arrow",
-  r: "rect",
+  r: "shape",
   t: "text",
-  p: "pixelate",
+  p: "redact",
 };
+
+function next<T>(order: readonly T[], value: T): T {
+  return order[(order.indexOf(value) + 1) % order.length];
+}
 const MIN_SHAPE_SIZE = 4;
 const HISTORY_LIMIT = 100;
 
@@ -47,6 +73,9 @@ type ContentRect = { left: number; top: number; cssPerPixel: number };
 export class AnnotationEditor {
   tool: Tool = "select";
   color = ANNOTATION_COLORS[0];
+  options: ToolOptions = defaultToolOptions();
+  /** Hears every options change, to remember it; set by the owner. */
+  onOptionsChange: (options: ToolOptions) => void = () => {};
   private annotations: Annotation[] = [];
   private selectedId: string | null = null;
   private draft: Annotation | null = null;
@@ -106,6 +135,37 @@ export class AnnotationEditor {
   /** The committed annotations, for saving; drafts in progress are not included. */
   snapshot(): Annotation[] {
     return this.annotations;
+  }
+
+  /**
+   * Changes the tool options; a selected text or arrow takes the new size or style, as one
+   * undoable step.
+   */
+  setOptions(changes: Partial<ToolOptions>): void {
+    this.options = { ...this.options, ...changes };
+    this.onOptionsChange(this.options);
+    const selected = this.annotations.find((item) => item.id === this.selectedId);
+    let updated: Annotation | null = null;
+    if (selected?.kind === "text" && changes.textSize) {
+      updated = { ...selected, size: TEXT_SIZES[changes.textSize] };
+    } else if (selected?.kind === "arrow" && (changes.arrowHead || changes.arrowWidth)) {
+      updated = { ...selected, head: this.options.arrowHead, width: this.options.arrowWidth };
+    }
+    if (updated) {
+      const replacement = updated;
+      this.commit(this.annotations.map((item) => (item.id === replacement.id ? replacement : item)));
+    } else {
+      this.onChange();
+    }
+  }
+
+  /** The second press of a tool's key: the next size, style, mode or shape. */
+  private cycleOption(tool: Tool): void {
+    const { options } = this;
+    if (tool === "text") this.setOptions({ textSize: next(TEXT_SIZE_ORDER, options.textSize) });
+    else if (tool === "arrow") this.setOptions({ arrowHead: next(ARROW_HEAD_ORDER, options.arrowHead) });
+    else if (tool === "redact") this.setOptions({ redactMode: next(REDACT_MODE_ORDER, options.redactMode) });
+    else if (tool === "shape") this.setOptions({ shape: next(SHAPE_ORDER, options.shape) });
   }
 
   setTool(tool: Tool): void {
@@ -209,9 +269,14 @@ export class AnnotationEditor {
       this.onChange();
       return true;
     }
+    if (event.key === "Escape" && this.tool !== "select") {
+      this.setTool("select");
+      return true;
+    }
     const tool = TOOL_KEYS[key];
     if (tool) {
-      this.setTool(tool);
+      if (tool === this.tool && /^[1-4]$/.test(key) && !event.repeat) this.cycleOption(tool);
+      else this.setTool(tool);
       return true;
     }
     return false;
@@ -231,7 +296,7 @@ export class AnnotationEditor {
     const { layout, scale } = geometry;
     this.textEntry.style.left = `${content.left + (layout.x + this.textAnchor.x) * content.cssPerPixel}px`;
     this.textEntry.style.top = `${content.top + (layout.y + this.textAnchor.y) * content.cssPerPixel}px`;
-    this.textEntry.style.fontSize = `${TEXT_SIZE * scale * content.cssPerPixel}px`;
+    this.textEntry.style.fontSize = `${TEXT_SIZES[this.options.textSize] * scale * content.cssPerPixel}px`;
   }
 
   /** Replaces the list as one undoable step. Every mutation goes through here. */
@@ -292,8 +357,10 @@ export class AnnotationEditor {
       return;
     }
 
-    if (this.tool === "select") {
-      const hit = inside ? hitTest(this.annotations, point, geometry.scale) : undefined;
+    // Arrows and shapes already drawn can be picked up and moved with their own tool.
+    const hit = inside ? hitTest(this.annotations, point, geometry.scale) : undefined;
+    const movable = this.tool === "select" || ((this.tool === "arrow" || this.tool === "shape") && hit && hit.kind !== "pixelate");
+    if (movable) {
       this.selectedId = hit?.id ?? null;
       if (hit) {
         this.canvas.setPointerCapture(event.pointerId);
@@ -362,20 +429,21 @@ export class AnnotationEditor {
 
   private shapeFrom(start: Point, end: Point): Annotation {
     const id = this.draft?.id ?? crypto.randomUUID();
-    switch (this.tool) {
-      case "arrow":
-        return { id, kind: "arrow", color: this.color, from: { ...start }, to: { ...end } };
-      case "pixelate":
-        return { id, kind: "pixelate", ...boxFromPoints(start, end) };
-      default:
-        return { id, kind: "rect", color: this.color, ...boxFromPoints(start, end) };
+    const { arrowHead, arrowWidth, redactMode, shape } = this.options;
+    if (this.tool === "arrow") {
+      return { id, kind: "arrow", color: this.color, from: { ...start }, to: { ...end }, head: arrowHead, width: arrowWidth };
     }
+    if (this.tool === "redact") {
+      return { id, kind: "pixelate", ...boxFromPoints(start, end), ...(redactMode === "solid" ? { mode: redactMode } : {}) };
+    }
+    if (shape === "line") return { id, kind: "line", color: this.color, from: { ...start }, to: { ...end } };
+    return { id, kind: shape, color: this.color, ...boxFromPoints(start, end) };
   }
 
   /** Drafts are only arrows and boxes; text is created through the input instead. */
   private isLargeEnough(annotation: Annotation, scale: number): boolean {
     const minimum = MIN_SHAPE_SIZE * scale;
-    if (annotation.kind === "arrow") {
+    if (annotation.kind === "arrow" || annotation.kind === "line") {
       return Math.hypot(annotation.to.x - annotation.from.x, annotation.to.y - annotation.from.y) >= minimum;
     }
     return "width" in annotation && annotation.width >= minimum && annotation.height >= minimum;
@@ -395,7 +463,8 @@ export class AnnotationEditor {
     const anchor = this.textAnchor;
     this.closeTextEntry();
     if (!text || !anchor) return;
-    const annotation: Annotation = { id: crypto.randomUUID(), kind: "text", color: this.color, at: anchor, text };
+    const size = TEXT_SIZES[this.options.textSize];
+    const annotation: Annotation = { id: crypto.randomUUID(), kind: "text", color: this.color, at: anchor, text, size };
     this.selectedId = annotation.id;
     this.commit([...this.annotations, annotation]);
   }
