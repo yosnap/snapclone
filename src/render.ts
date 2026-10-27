@@ -1,3 +1,4 @@
+import { type Annotation, FONT_STACK, drawAnnotations, drawSelection } from "./annotations";
 import { type Background, type Style, ratioValue } from "./style";
 
 export type Capture = { image: HTMLImageElement; scale: number };
@@ -5,42 +6,112 @@ export type Capture = { image: HTMLImageElement; scale: number };
 const WATERMARK_FONT_SIZE = 12;
 const WATERMARK_GAP = 10;
 
-/**
- * Draws the final composition at capture resolution. The same canvas is the preview
- * and the export source, so what is shown is exactly what gets copied or saved.
- */
-export function render(canvas: HTMLCanvasElement, capture: Capture, style: Style): void {
+export type Overlay = {
+  annotations: Annotation[];
+  selected: Annotation | null;
+};
+
+/** Where the capture sits inside the composed canvas, in canvas pixels. */
+export type Layout = { width: number; height: number; x: number; y: number; radius: number };
+
+export function layout(capture: Capture, style: Style): Layout {
   const { image, scale } = capture;
   const padding = style.padding * scale;
-  const contentWidth = image.naturalWidth + padding * 2;
-  const contentHeight = image.naturalHeight + padding * 2;
-  const { width, height } = fitRatio(contentWidth, contentHeight, ratioValue(style.ratio));
+  const fitted = fitRatio(image.naturalWidth + padding * 2, image.naturalHeight + padding * 2, ratioValue(style.ratio));
+  const width = Math.round(fitted.width);
+  const height = Math.round(fitted.height);
+  return {
+    width,
+    height,
+    x: Math.round((width - image.naturalWidth) / 2),
+    y: Math.round((height - image.naturalHeight) / 2),
+    radius: Math.min(style.radius * scale, image.naturalWidth / 2, image.naturalHeight / 2),
+  };
+}
 
-  resize(canvas, Math.round(width), Math.round(height));
+/**
+ * Draws the final composition at capture resolution. The same canvas is the preview
+ * and the export source, so what is shown is exactly what gets copied or saved;
+ * exports pass no selection so the dashed outline never leaks into the output.
+ */
+export function render(canvas: HTMLCanvasElement, capture: Capture, style: Style, overlay: Overlay): void {
+  const { image, scale } = capture;
+  const frame = layout(capture, style);
+  const { x, y, radius } = frame;
+
+  resize(canvas, frame.width, frame.height);
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(baseLayer(capture, style, frame), 0, 0);
 
-  paintBackground(ctx, style.background, canvas.width, canvas.height);
+  ctx.save();
+  roundedRect(ctx, x, y, image.naturalWidth, image.naturalHeight, radius);
+  ctx.clip();
+  ctx.translate(x, y);
+  drawAnnotations(ctx, image, overlay.annotations, scale);
+  ctx.restore();
 
-  const x = Math.round((canvas.width - image.naturalWidth) / 2);
-  const y = Math.round((canvas.height - image.naturalHeight) / 2);
-  const radius = Math.min(style.radius * scale, image.naturalWidth / 2, image.naturalHeight / 2);
+  if (overlay.selected) {
+    ctx.save();
+    ctx.translate(x, y);
+    drawSelection(ctx, overlay.selected, scale);
+    ctx.restore();
+  }
+}
+
+const base = { canvas: document.createElement("canvas"), key: "" };
+const objectIds = new WeakMap<object, number>();
+let nextObjectId = 0;
+
+function objectId(value: object): number {
+  let id = objectIds.get(value);
+  if (id === undefined) {
+    id = nextObjectId++;
+    objectIds.set(value, id);
+  }
+  return id;
+}
+
+/**
+ * Background, shadowed capture and watermark only change with the style or the capture,
+ * so they are cached and annotation drags only repaint what sits on top.
+ */
+function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasElement {
+  const key = [
+    objectId(capture.image),
+    capture.scale,
+    objectId(style.background),
+    style.padding,
+    style.radius,
+    style.shadow,
+    style.ratio,
+    style.watermark,
+  ].join("|");
+  if (key === base.key) return base.canvas;
+
+  const { image, scale } = capture;
+  resize(base.canvas, frame.width, frame.height);
+  const ctx = base.canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, frame.width, frame.height);
+  paintBackground(ctx, style.background, frame.width, frame.height);
 
   // Drawing the already-rounded capture with a shadow makes the shadow follow its alpha,
   // so transparent pixels (window captures) never reveal a solid backing shape.
-  const rounded = roundedCapture(image, radius);
+  const rounded = roundedCapture(image, frame.radius);
   ctx.save();
   if (style.shadow > 0) {
     ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
     ctx.shadowBlur = style.shadow * scale;
     ctx.shadowOffsetY = style.shadow * scale * 0.4;
   }
-  ctx.drawImage(rounded, x, y);
+  ctx.drawImage(rounded, frame.x, frame.y);
   ctx.restore();
 
   if (style.watermark.trim()) {
-    paintWatermark(ctx, style.watermark.trim(), x + image.naturalWidth, y + image.naturalHeight, scale);
+    paintWatermark(ctx, style.watermark.trim(), frame.x + image.naturalWidth, frame.y + image.naturalHeight, scale);
   }
+  base.key = key;
+  return base.canvas;
 }
 
 const roundedLayer = document.createElement("canvas");
@@ -122,7 +193,7 @@ function paintWatermark(ctx: CanvasRenderingContext2D, text: string, right: numb
   const fontSize = WATERMARK_FONT_SIZE * scale;
   const baseline = Math.min(bottom + (WATERMARK_GAP + WATERMARK_FONT_SIZE) * scale, ctx.canvas.height - 4 * scale);
   ctx.save();
-  ctx.font = `400 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  ctx.font = `400 ${fontSize}px ${FONT_STACK}`;
   ctx.textAlign = "right";
   ctx.globalAlpha = 0.8;
   ctx.shadowColor = "#000";

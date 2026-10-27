@@ -41,12 +41,86 @@ body {
 
 .stage {
   display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.tool-group {
+  display: flex;
+  gap: 4px;
+}
+
+button.tool {
+  padding: 4px 10px;
+  border-color: var(--border);
+  background: transparent;
+  color: var(--fg);
+}
+
+button.tool[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+}
+
+.color-swatch[aria-pressed="true"] {
+  border-color: var(--fg);
+  box-shadow: 0 0 0 2px var(--surface) inset;
+}
+
+.canvas-area {
+  display: flex;
+  flex: 1;
   align-items: center;
   justify-content: center;
-  min-width: 0;
   min-height: 0;
   padding: 24px;
   box-sizing: border-box;
+}
+
+#editor-canvas[data-tool="select"] {
+  cursor: default;
+}
+
+#editor-canvas:not([data-tool="select"]) {
+  cursor: crosshair;
+}
+
+#editor-canvas[data-tool="text"] {
+  cursor: text;
+}
+
+input.text-entry {
+  position: fixed;
+  z-index: 10;
+  min-width: 120px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  line-height: 1.2;
+  /* An outline takes no layout space, so the typed text sits exactly where it will be drawn. */
+  outline: 1px dashed currentColor;
 }
 
 #editor-canvas {
