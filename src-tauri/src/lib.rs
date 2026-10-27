@@ -11,6 +11,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(capture::Captures::default())
+        .manage(export::PendingSave::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -39,6 +40,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             capture::start_capture,
             export::copy_png,
+            export::choose_save_path,
             export::save_image
         ])
         .setup(move |app| {

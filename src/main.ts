@@ -5,7 +5,7 @@ import { copyToClipboard, saveToFile } from "./export";
 import { type Capture, render } from "./render";
 import { defaultStyle } from "./style";
 
-type CaptureReady = { id: string };
+type CaptureReady = { id: string; scale: number };
 
 const canvas = document.querySelector<HTMLCanvasElement>("#editor-canvas")!;
 const emptyState = document.querySelector<HTMLElement>("#empty-state")!;
@@ -17,6 +17,7 @@ const saveButton = document.querySelector<HTMLButtonElement>("#save-button")!;
 const style = defaultStyle();
 let capture: Capture | null = null;
 let renderQueued = false;
+let exporting = false;
 
 function scheduleRender(): void {
   if (!capture || renderQueued) return;
@@ -31,15 +32,14 @@ function captureUrl(id: string): string {
   return `capture://localhost/${id}`;
 }
 
-async function loadCapture(id: string): Promise<void> {
+async function loadCapture({ id, scale }: CaptureReady): Promise<void> {
   const image = new Image();
   // Served with CORS so the canvas is not tainted and can be exported.
   image.crossOrigin = "anonymous";
   image.src = captureUrl(id);
   await image.decode();
 
-  // screencapture writes physical pixels; the window's backing scale converts points to pixels.
-  capture = { image, scale: window.devicePixelRatio || 1 };
+  capture = { image, scale };
   emptyState.hidden = true;
   canvas.hidden = false;
   copyButton.disabled = false;
@@ -53,24 +53,29 @@ function showStatus(message: string, isError = false): void {
   status.classList.toggle("error", isError);
 }
 
-async function copy(): Promise<void> {
-  if (!capture) return;
+/** Renders synchronously before exporting, so a pending frame never leaks into the output. */
+async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string | null>, failure: string) {
+  if (!capture || exporting) return;
+  exporting = true;
   try {
-    await copyToClipboard(canvas);
-    showStatus("Copiada al portapapeles");
+    render(canvas, capture, style);
+    const message = await action(canvas);
+    if (message) showStatus(message);
   } catch (error) {
-    showStatus(`No se pudo copiar: ${error}`, true);
+    showStatus(`${failure}: ${error}`, true);
+  } finally {
+    exporting = false;
   }
 }
 
-async function saveImage(): Promise<void> {
-  if (!capture) return;
-  try {
-    if (await saveToFile(canvas)) showStatus("Imagen guardada");
-  } catch (error) {
-    showStatus(`No se pudo guardar: ${error}`, true);
-  }
-}
+const copy = () =>
+  exportWith(async (target) => {
+    await copyToClipboard(target);
+    return "Copiada al portapapeles";
+  }, "No se pudo copiar");
+
+const saveImage = () =>
+  exportWith(async (target) => ((await saveToFile(target)) ? "Imagen guardada" : null), "No se pudo guardar");
 
 function startCapture(): void {
   invoke("start_capture").catch((error) => showStatus(`No se pudo capturar: ${error}`, true));
@@ -85,7 +90,7 @@ copyButton.addEventListener("click", copy);
 saveButton.addEventListener("click", saveImage);
 
 document.addEventListener("keydown", (event) => {
-  if (!event.metaKey || event.shiftKey || event.altKey) return;
+  if (!event.metaKey || event.shiftKey || event.altKey || event.repeat) return;
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
   if (event.key === "c" && !editingText) {
     event.preventDefault();
@@ -97,5 +102,5 @@ document.addEventListener("keydown", (event) => {
 });
 
 listen<CaptureReady>("capture-ready", (event) => {
-  loadCapture(event.payload.id).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
+  loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
 });

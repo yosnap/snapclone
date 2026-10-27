@@ -16,37 +16,51 @@ export function render(canvas: HTMLCanvasElement, capture: Capture, style: Style
   const contentHeight = image.naturalHeight + padding * 2;
   const { width, height } = fitRatio(contentWidth, contentHeight, ratioValue(style.ratio));
 
-  canvas.width = Math.round(width);
-  canvas.height = Math.round(height);
+  resize(canvas, Math.round(width), Math.round(height));
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   paintBackground(ctx, style.background, canvas.width, canvas.height);
 
-  const x = (canvas.width - image.naturalWidth) / 2;
-  const y = (canvas.height - image.naturalHeight) / 2;
+  const x = Math.round((canvas.width - image.naturalWidth) / 2);
+  const y = Math.round((canvas.height - image.naturalHeight) / 2);
   const radius = Math.min(style.radius * scale, image.naturalWidth / 2, image.naturalHeight / 2);
 
+  // Drawing the already-rounded capture with a shadow makes the shadow follow its alpha,
+  // so transparent pixels (window captures) never reveal a solid backing shape.
+  const rounded = roundedCapture(image, radius);
+  ctx.save();
   if (style.shadow > 0) {
-    ctx.save();
     ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
     ctx.shadowBlur = style.shadow * scale;
     ctx.shadowOffsetY = style.shadow * scale * 0.4;
-    ctx.fillStyle = "#000";
-    roundedRect(ctx, x, y, image.naturalWidth, image.naturalHeight, radius);
-    ctx.fill();
-    ctx.restore();
   }
-
-  ctx.save();
-  roundedRect(ctx, x, y, image.naturalWidth, image.naturalHeight, radius);
-  ctx.clip();
-  ctx.drawImage(image, x, y);
+  ctx.drawImage(rounded, x, y);
   ctx.restore();
 
   if (style.watermark.trim()) {
     paintWatermark(ctx, style.watermark.trim(), x + image.naturalWidth, y + image.naturalHeight, scale);
   }
+}
+
+const roundedLayer = document.createElement("canvas");
+
+function roundedCapture(image: HTMLImageElement, radius: number): HTMLCanvasElement {
+  resize(roundedLayer, image.naturalWidth, image.naturalHeight);
+  const ctx = roundedLayer.getContext("2d")!;
+  ctx.clearRect(0, 0, roundedLayer.width, roundedLayer.height);
+  ctx.save();
+  roundedRect(ctx, 0, 0, roundedLayer.width, roundedLayer.height, radius);
+  ctx.clip();
+  ctx.drawImage(image, 0, 0);
+  ctx.restore();
+  return roundedLayer;
+}
+
+/** Assigning width/height reallocates the backing store, so only do it on real changes. */
+function resize(canvas: HTMLCanvasElement, width: number, height: number): void {
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
 }
 
 /** Grows the shorter side so the canvas matches the ratio; the image never shrinks. */

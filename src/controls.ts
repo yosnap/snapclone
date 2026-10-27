@@ -67,21 +67,29 @@ function bindBackgrounds(root: HTMLElement, style: Style, onChange: () => void):
     swatches.append(swatch);
   });
 
-  solid.addEventListener("input", () => select({ kind: "solid", color: solid.value }, null));
+  // `click` applies the initial colour too; `input` alone only fires when it changes.
+  const selectSolid = () => select({ kind: "solid", color: solid.value }, null);
+  solid.addEventListener("click", selectSolid);
+  solid.addEventListener("input", selectSolid);
 
+  // Only the latest uploaded background is kept alive; older blob URLs are released.
+  let backgroundUrl: string | null = null;
   file.addEventListener("change", async () => {
     const chosen = file.files?.[0];
+    file.value = "";
     if (!chosen) return;
+    const url = URL.createObjectURL(chosen);
     const image = new Image();
-    image.src = URL.createObjectURL(chosen);
+    image.src = url;
     try {
       await image.decode();
     } catch (error) {
+      URL.revokeObjectURL(url);
       console.error("background image could not be decoded", error);
       return;
     }
-    if (style.background.kind === "image") URL.revokeObjectURL(style.background.image.src);
+    if (backgroundUrl) URL.revokeObjectURL(backgroundUrl);
+    backgroundUrl = url;
     select({ kind: "image", image }, null);
-    file.value = "";
   });
 }

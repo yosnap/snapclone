@@ -1,5 +1,15 @@
-use percent_encoding::percent_decode_str;
-use tauri::ipc::{InvokeBody, Request};
+use std::{path::PathBuf, sync::Mutex};
+
+use tauri::{
+    State,
+    ipc::{InvokeBody, Request},
+};
+use tauri_plugin_dialog::DialogExt;
+
+/// The path the user picked in the save dialog. `save_image` only ever writes there,
+/// so the webview cannot choose arbitrary destinations.
+#[derive(Default)]
+pub struct PendingSave(Mutex<Option<PathBuf>>);
 
 /// Encoded image bytes arrive as a raw IPC body to avoid JSON-encoding megabytes.
 fn raw_body<'a>(request: &'a Request<'_>) -> Result<&'a [u8], String> {
@@ -10,25 +20,43 @@ fn raw_body<'a>(request: &'a Request<'_>) -> Result<&'a [u8], String> {
 }
 
 /// Puts the PNG on the general pasteboard as `public.png`, without re-encoding.
+/// Kept synchronous so AppKit is called from the main thread.
 #[tauri::command]
 pub fn copy_png(request: Request<'_>) -> Result<(), String> {
     write_png_to_pasteboard(raw_body(&request)?)
 }
 
-/// Writes already-encoded PNG/JPEG bytes to the path chosen in the save dialog.
-/// The path travels percent-encoded in the `path` header because headers must be ASCII.
+/// Shows the native save dialog and remembers the choice. Returns the path so the
+/// editor can pick PNG or JPEG from its extension, or `None` if the user cancelled.
 #[tauri::command]
-pub fn save_image(request: Request<'_>) -> Result<(), String> {
-    let bytes = raw_body(&request)?;
-    let encoded = request
-        .headers()
-        .get("path")
-        .and_then(|value| value.to_str().ok())
-        .ok_or("missing path header")?;
-    let path = percent_decode_str(encoded)
-        .decode_utf8()
-        .map_err(|error| error.to_string())?;
-    std::fs::write(path.as_ref(), bytes).map_err(|error| error.to_string())
+pub async fn choose_save_path(
+    app: tauri::AppHandle,
+    pending: State<'_, PendingSave>,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    let chosen = app
+        .dialog()
+        .file()
+        .set_file_name(default_name)
+        .add_filter("PNG", &["png"])
+        .add_filter("JPEG", &["jpg", "jpeg"])
+        .blocking_save_file()
+        .map(|path| path.into_path().map_err(|error| error.to_string()))
+        .transpose()?;
+    let display = chosen.as_ref().map(|path| path.to_string_lossy().into_owned());
+    *pending.0.lock().unwrap() = chosen;
+    Ok(display)
+}
+
+/// Writes the encoded image to the path from the last `choose_save_path`, off the main thread.
+#[tauri::command]
+pub async fn save_image(pending: State<'_, PendingSave>, request: Request<'_>) -> Result<(), String> {
+    let path = pending.0.lock().unwrap().take().ok_or("no save destination was chosen")?;
+    let bytes = raw_body(&request)?.to_vec();
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(path, bytes))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "macos")]
