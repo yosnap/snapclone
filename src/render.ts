@@ -1,7 +1,20 @@
 import { type Annotation, FONT_STACK, drawAnnotations, drawSelection } from "./annotations";
 import { type Background, type Style, ratioValue } from "./style";
 
-export type Capture = { image: HTMLImageElement; scale: number };
+/** The capture as loaded, or a canvas derived from it (a balanced capture). */
+export type CaptureSource = HTMLImageElement | HTMLCanvasElement;
+/** `width` and `height` are the source's pixel size, read once so both kinds behave alike. */
+export type Capture = { image: CaptureSource; width: number; height: number; scale: number };
+
+export function makeCapture(image: CaptureSource, scale: number): Capture {
+  const isImage = image instanceof HTMLImageElement;
+  return {
+    image,
+    width: isImage ? image.naturalWidth : image.width,
+    height: isImage ? image.naturalHeight : image.height,
+    scale,
+  };
+}
 
 const WATERMARK_FONT_SIZE = 12;
 const WATERMARK_GAP = 10;
@@ -15,17 +28,17 @@ export type Overlay = {
 export type Layout = { width: number; height: number; x: number; y: number; radius: number };
 
 export function layout(capture: Capture, style: Style): Layout {
-  const { image, scale } = capture;
+  const { width: imageWidth, height: imageHeight, scale } = capture;
   const padding = style.padding * scale;
-  const fitted = fitRatio(image.naturalWidth + padding * 2, image.naturalHeight + padding * 2, ratioValue(style.ratio));
+  const fitted = fitRatio(imageWidth + padding * 2, imageHeight + padding * 2, ratioValue(style.ratio));
   const width = Math.round(fitted.width);
   const height = Math.round(fitted.height);
   return {
     width,
     height,
-    x: Math.round((width - image.naturalWidth) / 2),
-    y: Math.round((height - image.naturalHeight) / 2),
-    radius: Math.min(style.radius * scale, image.naturalWidth / 2, image.naturalHeight / 2),
+    x: Math.round((width - imageWidth) / 2),
+    y: Math.round((height - imageHeight) / 2),
+    radius: Math.min(style.radius * scale, imageWidth / 2, imageHeight / 2),
   };
 }
 
@@ -35,7 +48,7 @@ export function layout(capture: Capture, style: Style): Layout {
  * exports pass no selection so the dashed outline never leaks into the output.
  */
 export function render(canvas: HTMLCanvasElement, capture: Capture, style: Style, overlay: Overlay): void {
-  const { image, scale } = capture;
+  const { scale } = capture;
   const frame = layout(capture, style);
   const { x, y, radius } = frame;
 
@@ -45,10 +58,10 @@ export function render(canvas: HTMLCanvasElement, capture: Capture, style: Style
   ctx.drawImage(baseLayer(capture, style, frame), 0, 0);
 
   ctx.save();
-  roundedRect(ctx, x, y, image.naturalWidth, image.naturalHeight, radius);
+  roundedRect(ctx, x, y, capture.width, capture.height, radius);
   ctx.clip();
   ctx.translate(x, y);
-  drawAnnotations(ctx, image, overlay.annotations, scale);
+  drawAnnotations(ctx, capture, overlay.annotations);
   ctx.restore();
 
   if (overlay.selected) {
@@ -89,7 +102,7 @@ function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasEle
   ].join("|");
   if (key === base.key) return base.canvas;
 
-  const { image, scale } = capture;
+  const { scale } = capture;
   resize(base.canvas, frame.width, frame.height);
   const ctx = base.canvas.getContext("2d")!;
   ctx.clearRect(0, 0, frame.width, frame.height);
@@ -97,7 +110,7 @@ function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasEle
 
   // Drawing the already-rounded capture with a shadow makes the shadow follow its alpha,
   // so transparent pixels (window captures) never reveal a solid backing shape.
-  const rounded = roundedCapture(image, frame.radius);
+  const rounded = roundedCapture(capture, frame.radius);
   ctx.save();
   if (style.shadow > 0) {
     ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
@@ -108,7 +121,7 @@ function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasEle
   ctx.restore();
 
   if (style.watermark.trim()) {
-    paintWatermark(ctx, style.watermark.trim(), frame.x + image.naturalWidth, frame.y + image.naturalHeight, scale);
+    paintWatermark(ctx, style.watermark.trim(), frame.x + capture.width, frame.y + capture.height, scale);
   }
   base.key = key;
   return base.canvas;
@@ -116,14 +129,14 @@ function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasEle
 
 const roundedLayer = document.createElement("canvas");
 
-function roundedCapture(image: HTMLImageElement, radius: number): HTMLCanvasElement {
-  resize(roundedLayer, image.naturalWidth, image.naturalHeight);
+function roundedCapture(capture: Capture, radius: number): HTMLCanvasElement {
+  resize(roundedLayer, capture.width, capture.height);
   const ctx = roundedLayer.getContext("2d")!;
   ctx.clearRect(0, 0, roundedLayer.width, roundedLayer.height);
   ctx.save();
   roundedRect(ctx, 0, 0, roundedLayer.width, roundedLayer.height, radius);
   ctx.clip();
-  ctx.drawImage(image, 0, 0);
+  ctx.drawImage(capture.image, 0, 0);
   ctx.restore();
   return roundedLayer;
 }

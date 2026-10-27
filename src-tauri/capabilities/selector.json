@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "selector",
+  "description": "Region selector overlays: they only share the window-mode toggle through events",
+  "windows": [
+    "selector-*"
+  ],
+  "permissions": [
+    "core:event:default"
+  ]
+}

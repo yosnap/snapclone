@@ -86,6 +86,18 @@ export class AnnotationEditor {
     this.onChange();
   }
 
+  /** Starts a capture with saved annotations, without history: they are its initial state. */
+  load(annotations: Annotation[]): void {
+    this.reset();
+    this.annotations = annotations;
+    this.onChange();
+  }
+
+  /** The committed annotations, for saving; drafts in progress are not included. */
+  snapshot(): Annotation[] {
+    return this.annotations;
+  }
+
   setTool(tool: Tool): void {
     this.tool = tool;
     if (tool !== "select") this.selectedId = null;
@@ -132,6 +144,15 @@ export class AnnotationEditor {
 
   removeAutoRedactions(category: RedactCategory): void {
     this.applyToHistory((list) => list.filter((item) => !(item.kind === "pixelate" && item.auto === category)));
+  }
+
+  /**
+   * Moves every annotation, in every history snapshot, when the capture under them moves
+   * (balancing re-centres its content). Not undoable: undo must not undo the image change.
+   */
+  translate(dx: number, dy: number): void {
+    if (dx === 0 && dy === 0) return;
+    this.applyToHistory((list) => list.map((item) => moved(item, dx, dy)));
   }
 
   private applyToHistory(change: (list: Annotation[]) => Annotation[]): void {

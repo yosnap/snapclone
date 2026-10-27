@@ -65,10 +65,24 @@
           <span>Proporción</span>
           <select name="ratio"></select>
         </label>
+        <label class="check">
+          <input type="checkbox" id="balance-toggle" />
+          Equilibrar captura
+        </label>
         <label class="field">
           <span>Marca de agua</span>
           <input type="text" name="watermark" placeholder="@tu_usuario" />
         </label>
+
+        <fieldset id="presets" class="presets">
+          <legend>Presets</legend>
+          <select id="preset-select" aria-label="Preset guardado"></select>
+          <input type="text" id="preset-name" placeholder="Nombre del preset" aria-label="Nombre del preset" />
+          <div class="preset-actions">
+            <button type="button" id="preset-save" class="secondary compact">Guardar</button>
+            <button type="button" id="preset-delete" class="secondary compact">Borrar</button>
+          </div>
+        </fieldset>
 
         <fieldset>
           <legend>Tachar automáticamente</legend>
@@ -79,9 +93,22 @@
           <button id="copy-button" type="button" disabled>Copiar <kbd>⌘C</kbd></button>
           <button id="save-button" type="button" class="secondary" disabled>Guardar <kbd>⌘S</kbd></button>
           <button type="button" class="secondary" data-action="capture">Nueva captura</button>
+          <button type="button" id="history-button" class="secondary">Historial</button>
         </div>
         <p id="status" class="status" role="status"></p>
       </aside>
     </main>
+
+    <div id="history" class="history" role="dialog" aria-modal="true" aria-labelledby="history-title" hidden>
+      <div class="history-panel">
+        <header class="history-header">
+          <h2 id="history-title">Historial</h2>
+          <button type="button" id="history-close" class="secondary compact">Cerrar</button>
+        </header>
+        <p id="history-empty" class="history-empty" hidden>Todavía no hay capturas guardadas.</p>
+        <ul id="history-list" class="history-list"></ul>
+        <button type="button" id="history-more" class="secondary history-more" hidden>Mostrar más</button>
+      </div>
+    </div>
   </body>
 </html>
