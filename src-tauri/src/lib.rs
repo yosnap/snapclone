@@ -7,8 +7,10 @@ mod images;
 mod prefs;
 mod redact;
 mod screen;
+mod scroll;
 mod selector;
 mod shortcuts;
+mod stitch;
 mod tray;
 
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -22,6 +24,7 @@ pub fn run() {
         .manage(export::PendingSave::default())
         .manage(selector::Selection::default())
         .manage(shortcuts::Shortcuts::default())
+        .manage(scroll::ScrollCapture::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -47,7 +50,10 @@ pub fn run() {
             }
             // A shortcut recorder left open never keeps the global shortcuts paused.
             WindowEvent::Focused(false) if window.label() == capture::EDITOR_WINDOW => shortcuts::resume(window.app_handle()),
-            WindowEvent::Destroyed => selector::on_window_destroyed(window.app_handle(), window.label()),
+            WindowEvent::Destroyed => {
+                selector::on_window_destroyed(window.app_handle(), window.label());
+                scroll::on_window_destroyed(window.app_handle(), window.label());
+            }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
@@ -69,7 +75,9 @@ pub fn run() {
             editor_window::set_dock_hidden,
             shortcuts::get_shortcuts,
             shortcuts::set_shortcut,
-            shortcuts::pause_shortcuts
+            shortcuts::pause_shortcuts,
+            scroll::finish_scroll,
+            scroll::cancel_scroll
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));
@@ -77,7 +85,10 @@ pub fn run() {
             app.set_activation_policy(editor_window::activation_policy(editor_window::dock_hidden(app.handle())));
             let registered = shortcuts::init(app.handle());
             tray::build(app.handle(), &registered)?;
-            tray::add_settings_to_app_menu(app.handle())?;
+            // ⌘, still works from the editor's button and the menu bar icon without it.
+            if let Err(error) = tray::add_settings_to_app_menu(app.handle()) {
+                eprintln!("settings could not be added to the app menu: {error}");
+            }
             editor_window::show(app.handle(), true);
             Ok(())
         })

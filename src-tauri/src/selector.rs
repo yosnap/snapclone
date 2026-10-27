@@ -15,7 +15,10 @@ use tauri::{
 };
 use xcap::image::RgbaImage;
 
-use crate::capture::{self, CaptureKind};
+use crate::{
+    capture::{self, CaptureKind},
+    geometry, scroll,
+};
 
 const WINDOW_PREFIX: &str = "selector-";
 const PAGE: &str = "selector.html";
@@ -35,6 +38,7 @@ struct Session {
 }
 
 struct MonitorShot {
+    id: u32,
     /// Global position and size in points, as the overlay window is laid out.
     x: i32,
     y: i32,
@@ -105,6 +109,7 @@ pub fn open(app: &AppHandle, kind: CaptureKind) -> Result<(), String> {
         .iter()
         .map(|monitor| {
             Ok(MonitorShot {
+                id: monitor.id()?,
                 x: monitor.x()?,
                 y: monitor.y()?,
                 width: monitor.width()?,
@@ -178,7 +183,7 @@ fn open_overlay(app: &AppHandle, index: usize, x: i32, y: i32, width: u32, heigh
 
 /// "Always on top" is the floating level, which the menu bar and the Dock still cover.
 #[cfg(target_os = "macos")]
-fn raise_above_menu_bar(app: &AppHandle, window: WebviewWindow) {
+pub fn raise_above_menu_bar(app: &AppHandle, window: WebviewWindow) {
     let result = app.run_on_main_thread(move || {
         use objc2_app_kit::{NSPopUpMenuWindowLevel, NSWindow};
         let Ok(pointer) = window.ns_window() else { return };
@@ -188,12 +193,12 @@ fn raise_above_menu_bar(app: &AppHandle, window: WebviewWindow) {
         ns_window.setLevel(NSPopUpMenuWindowLevel);
     });
     if let Err(error) = result {
-        eprintln!("selector window level could not be raised: {error}");
+        eprintln!("overlay window level could not be raised: {error}");
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn raise_above_menu_bar(_app: &AppHandle, _window: WebviewWindow) {}
+pub fn raise_above_menu_bar(_app: &AppHandle, _window: WebviewWindow) {}
 
 fn close_overlays(app: &AppHandle) {
     for (label, window) in app.webview_windows() {
@@ -293,11 +298,15 @@ pub fn cancel_selection(app: AppHandle) {
     abandon(&app);
 }
 
-/// Crops the dragged rectangle (points, relative to the overlay) from its monitor image.
+/// Crops the dragged rectangle (points, relative to the overlay) from its monitor image, or
+/// starts capturing it repeatedly for a scroll capture.
 #[tauri::command]
 pub async fn finish_selection(app: AppHandle, window: WebviewWindow, rect: Rect) -> Result<(), String> {
     let index = monitor_index(&window)?;
     let session = take_session(&app).ok_or("no selection in progress")?;
+    if session.kind == CaptureKind::Scroll {
+        return start_scroll(&app, session, index, rect);
+    }
     complete(&app, async {
         let shot = session.monitors.into_iter().nth(index).ok_or("unknown monitor")?;
         let scale = shot.scale();
@@ -307,6 +316,31 @@ pub async fn finish_selection(app: AppHandle, window: WebviewWindow, rect: Rect)
         capture::store_image(&app, image, scale).await
     })
     .await
+}
+
+/// Hands the zone to the scroll capture, which releases `in_progress` from then on.
+fn start_scroll(app: &AppHandle, session: Session, index: usize, rect: Rect) -> Result<(), String> {
+    let bounds = |shot: &MonitorShot| geometry::Rect::new(shot.x, shot.y, shot.width, shot.height);
+    let shot = session.monitors.get(index).ok_or("unknown monitor")?;
+    let started = crop_rect(rect, 1.0, shot.width, shot.height)
+        .ok_or_else(|| "the selection is empty".to_string())
+        .and_then(|(x, y, width, height)| {
+            let others = session.monitors.iter().enumerate().filter(|(other, _)| *other != index).map(|(_, shot)| bounds(shot));
+            scroll::begin(
+                app,
+                scroll::Target {
+                    monitor_id: shot.id,
+                    monitor: bounds(shot),
+                    zone: geometry::Rect::new(x as i32, y as i32, width, height),
+                    others: others.collect(),
+                },
+            )
+        });
+    if let Err(error) = &started {
+        capture::report_failure(app, error);
+        capture::selection_ended(app);
+    }
+    started
 }
 
 /// Captures one window by itself (so overlapping windows are left out). If the system

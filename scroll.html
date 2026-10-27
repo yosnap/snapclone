@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Snapclone</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        user-select: none;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 13px;
+      }
+
+      /* The four frame windows only show their colour. */
+      body.edge {
+        background: #2563eb;
+      }
+
+      body.edge .bar {
+        display: none;
+      }
+
+      body {
+        background: #18181b;
+        color: #f4f4f5;
+      }
+
+      .bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 100%;
+        padding: 0 12px;
+        box-sizing: border-box;
+      }
+
+      .readout {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        min-width: 0;
+      }
+
+      .height {
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .note {
+        overflow: hidden;
+        color: #a1a1aa;
+        font-size: 12px;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .note.warning {
+        color: #fbbf24;
+      }
+
+      button {
+        padding: 6px 12px;
+        border: 1px solid #2563eb;
+        border-radius: 8px;
+        background: #2563eb;
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        border-color: #3f3f46;
+        background: transparent;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+    </style>
+    <script type="module" src="/src/scroll-toolbar.ts" defer></script>
+  </head>
+
+  <body>
+    <div class="bar" role="toolbar" aria-label="Captura con scroll">
+      <div class="readout">
+        <span id="scroll-height" class="height">Altura: 0 px</span>
+        <span id="scroll-note" class="note" role="status">Desplázate por la zona marcada</span>
+      </div>
+      <button type="button" id="scroll-finish">Terminar ↩</button>
+      <button type="button" id="scroll-cancel" class="secondary">Cancelar</button>
+    </div>
+  </body>
+</html>
