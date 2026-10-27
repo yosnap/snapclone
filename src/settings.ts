@@ -1,6 +1,6 @@
 import { type Store, load } from "@tauri-apps/plugin-store";
 import { ANNOTATION_COLORS } from "./annotations";
-import { REDACT_CATEGORIES, type RedactSettings, defaultRedactSettings } from "./auto-redact";
+import { REDACT_CATEGORIES, REDACT_MODES, type RedactMode, type RedactSettings, defaultRedactSettings } from "./auto-redact";
 import { type StoredStyle, isHexColor, isRecord, parseStoredStyle, toStoredStyle } from "./persisted-style";
 import { defaultStyle } from "./style";
 
@@ -16,6 +16,9 @@ export type Preset = { name: string; style: StoredStyle };
 export type Settings = {
   style: StoredStyle;
   redact: RedactSettings;
+  /** The main "Redactar datos sensibles" checkbox; the categories apply while it is on. */
+  autoRedact: boolean;
+  redactMode: RedactMode;
   annotationColor: string;
   balance: boolean;
   presets: Preset[];
@@ -31,6 +34,8 @@ export function defaultSettings(): Settings {
   return {
     style: toStoredStyle(defaultStyle()),
     redact: defaultRedactSettings(),
+    autoRedact: true,
+    redactMode: "pixelate",
     annotationColor: ANNOTATION_COLORS[0],
     balance: false,
     presets: [],
@@ -58,13 +63,15 @@ export async function loadSettings(): Promise<Settings> {
       return undefined;
     }
   };
-  const [style, redact, annotationColor, balance, presets] = await Promise.all(
-    (["style", "redact", "annotationColor", "balance", "presets"] as const).map(read),
+  const [style, redact, annotationColor, balance, presets, autoRedact, redactMode] = await Promise.all(
+    (["style", "redact", "annotationColor", "balance", "presets", "autoRedact", "redactMode"] as const).map(read),
   );
   settings.style = parseStoredStyle(style) ?? settings.style;
   settings.redact = parseRedact(redact) ?? settings.redact;
   if (isHexColor(annotationColor)) settings.annotationColor = annotationColor;
   if (typeof balance === "boolean") settings.balance = balance;
+  if (typeof autoRedact === "boolean") settings.autoRedact = autoRedact;
+  if (REDACT_MODES.includes(redactMode as RedactMode)) settings.redactMode = redactMode as RedactMode;
   settings.presets = parsePresets(presets);
   return settings;
 }

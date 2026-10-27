@@ -113,3 +113,8 @@ input.text-entry {
 .toast.error {
   background: rgba(190, 20, 30, 0.92);
 }
+
+/* "Ninguno": the transparency shows as a checkerboard in the preview only. */
+#editor-canvas.transparent {
+  background: repeating-conic-gradient(var(--checker) 0 25%, var(--window) 0 50%) 0 0 / 16px 16px;
+}

@@ -1,4 +1,4 @@
-import type { RedactCategory } from "./auto-redact";
+import type { RedactCategory, RedactMode } from "./auto-redact";
 import type { Capture } from "./render";
 
 /**
@@ -13,8 +13,11 @@ type Colored = { id: string; color: string };
 export type ArrowAnnotation = Colored & { kind: "arrow"; from: Point; to: Point };
 export type RectAnnotation = Colored & Box & { kind: "rect" };
 export type TextAnnotation = Colored & { kind: "text"; at: Point; text: string };
-/** `auto` marks regions found by automatic redaction, so a category can be toggled off later. */
-export type PixelateAnnotation = Box & { id: string; kind: "pixelate"; auto?: RedactCategory };
+/**
+ * `auto` marks regions found by automatic redaction, so a category can be toggled off later.
+ * `mode` "solid" covers the region with a block instead of pixelating it.
+ */
+export type PixelateAnnotation = Box & { id: string; kind: "pixelate"; auto?: RedactCategory; mode?: RedactMode };
 export type Annotation = ArrowAnnotation | RectAnnotation | TextAnnotation | PixelateAnnotation;
 export type AnnotationKind = Annotation["kind"];
 
@@ -24,6 +27,7 @@ export const ANNOTATION_COLORS = ["#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#
 const STROKE_WIDTH = 4;
 export const TEXT_SIZE = 28;
 const PIXEL_BLOCK = 10;
+const REDACT_COLOR = "#000000";
 const HIT_TOLERANCE = 8;
 /** Shared by canvas text, the floating text input and the watermark so they always match. */
 export const FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
@@ -105,7 +109,12 @@ export function drawAnnotations(ctx: CanvasRenderingContext2D, capture: Capture,
         ctx.fillText(annotation.text, annotation.at.x, annotation.at.y + TEXT_SIZE * scale * 0.1);
         break;
       case "pixelate":
-        drawPixelate(ctx, capture, annotation);
+        if (annotation.mode === "solid") {
+          ctx.fillStyle = REDACT_COLOR;
+          ctx.fillRect(annotation.x, annotation.y, annotation.width, annotation.height);
+        } else {
+          drawPixelate(ctx, capture, annotation);
+        }
         break;
     }
   }

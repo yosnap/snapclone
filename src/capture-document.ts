@@ -59,9 +59,10 @@ function parseAnnotation(value: unknown): Annotation | null {
     case "pixelate": {
       const box = parseBox(value);
       if (!box) return null;
-      if (value.auto === undefined) return { id, kind: "pixelate", ...box };
+      const mode = value.mode === "solid" ? { mode: "solid" as const } : {};
+      if (value.auto === undefined) return { id, kind: "pixelate", ...mode, ...box };
       return typeof value.auto === "string" && CATEGORIES.has(value.auto)
-        ? { id, kind: "pixelate", auto: value.auto as RedactCategory, ...box }
+        ? { id, kind: "pixelate", auto: value.auto as RedactCategory, ...mode, ...box }
         : null;
     }
     default:

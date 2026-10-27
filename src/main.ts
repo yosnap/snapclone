@@ -3,26 +3,28 @@ import { listen } from "@tauri-apps/api/event";
 import { AnnotationEditor } from "./annotation-editor";
 import { type PixelateAnnotation, type Point, moved } from "./annotations";
 import {
+  REDACT_CATEGORIES,
   type RedactCategory,
+  type RedactMode,
   type SensitiveRegion,
-  bindRedactControls,
   defaultRedactSettings,
   detectSensitive,
   toPixelateAnnotations,
 } from "./auto-redact";
 import { type BalanceResult, analyzeBalance, balancedCanvas, readPixels } from "./balance";
 import { type CaptureDocument, parseCaptureDocument } from "./capture-document";
-import { bindControls } from "./controls";
 import { DocumentSaver } from "./document-saver";
 import { BottomBar } from "./bottom-bar";
 import { copyToClipboard, prepareExport, quickSave, saveToFile } from "./export";
 import { HistoryView, type OpenedCapture, captureUrl } from "./history-view";
 import { fillIcons } from "./icons";
+import { bindInspector } from "./inspector";
 import { highlightDrops, listenNotices, openClipboard, openFile } from "./open-image";
 import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { type MenuItem, closePopover, popoverContains } from "./popover";
 import { bindPresets } from "./presets";
-import { type Capture, layout, makeCapture, render } from "./render";
+import { bindRedactPanel } from "./redact-panel";
+import { type Capture, edgeColor, layout, makeCapture, outputCanvas, render } from "./render";
 import { bindReopen, reopenLast } from "./reopen-last";
 import { loadSettings, saveSetting } from "./settings";
 import { SettingsView } from "./settings-view";
@@ -53,6 +55,10 @@ let statusTimer: number | undefined;
 
 const style = defaultStyle();
 const redactSettings = defaultRedactSettings();
+/** The main checkbox and the way regions are hidden; the categories are `redactSettings`. */
+const redactPreferences = { enabled: true, mode: "pixelate" as RedactMode, categories: redactSettings };
+/** Shows how many regions were found (null while searching); replaced once bound. */
+let showFound: (found: number | null) => void = () => {};
 /** What the editor shows: the capture as taken, or its balanced version. */
 let capture: Capture | null = null;
 /** The capture as taken; detection boxes and balancing always refer to it. */
@@ -133,6 +139,7 @@ function scheduleRender(): void {
     renderQueued = false;
     if (!capture) return;
     render(canvas, capture, style, editor.overlay(true));
+    canvas.classList.toggle("transparent", style.background.kind === "none");
     zoom.update();
     editor.syncTextEntry();
   });
@@ -177,6 +184,8 @@ function showImage(image: HTMLImageElement, scale: number, id: string, saved: Ca
   syncExportButtons();
   // The document's own style, or the defaults for a new capture; neither is persisted here.
   applyStoredStyle(style, saved?.style ?? defaults.style);
+  // A colour picked for the previous capture's inset does not fit this one.
+  style.insetColor = null;
   balanceToggle.checked = saved?.balance ?? defaults.balance;
   refreshControls();
   if (balanceToggle.checked) applyBalance(true);
@@ -187,7 +196,8 @@ function showImage(image: HTMLImageElement, scale: number, id: string, saved: Ca
   }
   requireWallpaper();
   // Skip Vision entirely while every category is off; enabling one runs it on demand.
-  if (!outsideTauri && Object.values(redactSettings).some(Boolean)) runAutoRedaction(id);
+  showFound(0);
+  if (!outsideTauri && anyRedaction()) runAutoRedaction(id);
   scheduleRender();
 }
 
@@ -258,6 +268,8 @@ function applyBalance(enabled: boolean): void {
   editor.translate(offset.x - shift.x, offset.y - shift.y);
   shift = offset;
   capture = target;
+  // The inset colour shown is the edge colour of the capture now shown.
+  refreshControls();
   scheduleRender();
   scheduleDocumentSave();
 }
@@ -277,10 +289,44 @@ function regionsOf(category: RedactCategory): PixelateAnnotation[] {
   return detectedRegions.filter((region) => region.auto === category);
 }
 
+function categoryApplies(category: RedactCategory): boolean {
+  return redactPreferences.enabled && redactSettings[category];
+}
+
+/** Vision is skipped entirely while nothing would be redacted; enabling runs it on demand. */
+function anyRedaction(): boolean {
+  return redactPreferences.enabled && Object.values(redactSettings).some(Boolean);
+}
+
+/** Detected regions placed on the capture shown and hidden the way the user chose. */
+function applicable(regions: PixelateAnnotation[]): PixelateAnnotation[] {
+  const mode = redactPreferences.mode === "solid" ? { mode: "solid" as const } : {};
+  return shifted(regions).map((region) => ({ ...region, ...mode }));
+}
+
+function removeAllAutoRedactions(): void {
+  for (const { id } of REDACT_CATEGORIES) editor.removeAutoRedactions(id);
+}
+
+/** The main checkbox or the mode changed: the regions on the capture follow. */
+function refreshAutoRedactions(): void {
+  saveSetting("autoRedact", redactPreferences.enabled);
+  saveSetting("redactMode", redactPreferences.mode);
+  if (!capture || !captureId) return;
+  removeAllAutoRedactions();
+  if (!anyRedaction()) return;
+  if (detectedFor === captureId) {
+    editor.addAutoRedactions(applicable(detectedRegions.filter((region) => region.auto && categoryApplies(region.auto))));
+  } else {
+    runAutoRedaction(captureId);
+  }
+}
+
 async function runAutoRedaction(id: string): Promise<void> {
   if (detectedFor === id || detectingFor === id) return;
   detectingFor = id;
   syncExportButtons();
+  showFound(null);
   showStatus(SEARCHING_MESSAGE);
   try {
     const regions: SensitiveRegion[] = await detectSensitive(id);
@@ -288,8 +334,9 @@ async function runAutoRedaction(id: string): Promise<void> {
     if (id !== captureId || !original) return;
     detectedRegions = toPixelateAnnotations(regions, original.width, original.height, original.scale);
     detectedFor = id;
-    const enabled = detectedRegions.filter((region) => region.auto && redactSettings[region.auto]);
-    editor.addAutoRedactions(shifted(enabled));
+    showFound(detectedRegions.length);
+    const enabled = detectedRegions.filter((region) => region.auto && categoryApplies(region.auto));
+    editor.addAutoRedactions(applicable(enabled));
     // Only replace our own progress message, never an export confirmation shown meanwhile.
     if (status.textContent === SEARCHING_MESSAGE) {
       showStatus(enabled.length > 0 ? `Tachados automáticamente: ${enabled.length}` : "");
@@ -298,17 +345,18 @@ async function runAutoRedaction(id: string): Promise<void> {
     if (id === captureId) showStatus(`No se pudo analizar el texto, revisa la captura antes de compartirla: ${error}`, true);
   } finally {
     if (detectingFor === id) detectingFor = null;
+    if (id === captureId && detectedFor !== id) showFound(0);
     syncExportButtons();
   }
 }
 
 function toggleRedaction(category: RedactCategory, enabled: boolean): void {
   saveSetting("redact", { ...redactSettings });
-  if (!capture || !captureId) return;
+  if (!capture || !captureId || !redactPreferences.enabled) return;
   if (!enabled) {
     editor.removeAutoRedactions(category);
   } else if (detectedFor === captureId) {
-    editor.addAutoRedactions(shifted(regionsOf(category)));
+    editor.addAutoRedactions(applicable(regionsOf(category)));
   } else {
     runAutoRedaction(captureId);
   }
@@ -346,7 +394,7 @@ async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string 
       }
     }
     render(canvas, capture, style, editor.overlay(false));
-    const message = await action(canvas);
+    const message = await action(outputCanvas(canvas, style));
     if (message) showStatus(message);
     return true;
   } catch (error) {
@@ -448,9 +496,15 @@ async function init(): Promise<void> {
   defaults.balance = settings.balance;
   applyStoredStyle(style, settings.style);
   Object.assign(redactSettings, settings.redact);
+  redactPreferences.enabled = settings.autoRedact;
+  redactPreferences.mode = settings.redactMode;
   editor.setColor(settings.annotationColor);
 
-  refreshControls = bindControls(sidebar, style, styleChanged, requireWallpaper);
+  refreshControls = bindInspector(sidebar, style, {
+    changed: styleChanged,
+    wallpaperPicked: requireWallpaper,
+    edgeColor: () => (capture ? edgeColor(capture) : null),
+  });
   bindPresets(sidebar.querySelector<HTMLElement>("#presets")!, settings.presets, {
     current: () => toStoredStyle(style),
     apply: (stored) => {
@@ -462,7 +516,11 @@ async function init(): Promise<void> {
     persist: (presets) => saveSetting("presets", presets),
     notify: (message) => showStatus(message),
   });
-  bindRedactControls(sidebar.querySelector<HTMLElement>("#redact-options")!, redactSettings, toggleRedaction);
+  showFound = bindRedactPanel(sidebar, redactPreferences, {
+    enabledChanged: refreshAutoRedactions,
+    categoryChanged: toggleRedaction,
+    modeChanged: refreshAutoRedactions,
+  });
   balanceToggle.checked = settings.balance;
   balanceToggle.addEventListener("change", () => {
     defaults.balance = balanceToggle.checked;

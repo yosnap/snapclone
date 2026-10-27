@@ -68,60 +68,69 @@
         </section>
         <div class="split-divider" aria-hidden="true"></div>
 
-        <aside id="sidebar" class="sidebar">
-        <fieldset>
-          <legend>Fondo</legend>
-          <div id="background-swatches" class="swatches"></div>
-          <div class="row">
-            <label class="inline">Color <input type="color" id="solid-color" value="#1e293b" /></label>
-            <label class="file-button">
-              Imagen…
-              <input type="file" id="background-file" accept="image/*" hidden />
-            </label>
+        <aside id="sidebar" class="inspector" aria-label="Estilo">
+          <div id="presets" class="preset-row">
+            <button type="button" class="popup-button" id="preset-button" aria-haspopup="menu">
+              <span id="preset-label">Tu preset</span><span data-icon="chevron-up-down" data-icon-size="12"></span>
+            </button>
+            <button type="button" class="icon-button" id="preset-delete" title="Borrar preset">
+              <span data-icon="trash" data-icon-size="16"></span>
+            </button>
           </div>
-        </fieldset>
+          <div class="inspector-separator" role="separator"></div>
 
-        <label class="slider">
-          <span>Margen <output data-for="padding"></output></span>
-          <input type="range" name="padding" min="0" max="200" />
-        </label>
-        <label class="slider">
-          <span>Esquinas <output data-for="radius"></output></span>
-          <input type="range" name="radius" min="0" max="40" />
-        </label>
-        <label class="slider">
-          <span>Sombra <output data-for="shadow"></output></span>
-          <input type="range" name="shadow" min="0" max="100" />
-        </label>
-
-        <label class="field">
-          <span>Proporción</span>
-          <select name="ratio"></select>
-        </label>
-        <label class="check">
-          <input type="checkbox" id="balance-toggle" />
-          Equilibrar captura
-        </label>
-        <label class="field">
-          <span>Marca de agua</span>
-          <input type="text" name="watermark" placeholder="@tu_usuario" />
-        </label>
-
-        <fieldset id="presets" class="presets">
-          <legend>Presets</legend>
-          <select id="preset-select" aria-label="Preset guardado"></select>
-          <input type="text" id="preset-name" placeholder="Nombre del preset" aria-label="Nombre del preset" />
-          <div class="preset-actions">
-            <button type="button" id="preset-save" class="secondary compact">Guardar</button>
-            <button type="button" id="preset-delete" class="secondary compact">Borrar</button>
+          <div class="field">
+            <div class="field-label"><span>Padding</span><button type="button" class="value" data-value-for="padding"></button></div>
+            <input type="range" class="slider" name="padding" aria-label="Padding" />
           </div>
-        </fieldset>
 
-        <fieldset>
-          <legend>Tachar automáticamente</legend>
-          <div id="redact-options" class="checks"></div>
-        </fieldset>
+          <div class="field">
+            <div class="field-label">
+              <span>Inset</span><button type="button" class="value" data-value-for="inset"></button>
+              <span class="hint" id="inset-status"></span>
+            </div>
+            <div class="inset-row">
+              <input type="range" class="slider" name="inset" aria-label="Inset" />
+              <label class="checkbox"><input type="checkbox" id="balance-toggle" />Balance</label>
+              <input type="color" class="color-well" id="inset-color" title="Color del inset" aria-label="Color del inset" />
+            </div>
+          </div>
 
+          <div class="two-columns">
+            <div class="field">
+              <div class="field-label"><span>Rounded</span><button type="button" class="value" data-value-for="radius"></button></div>
+              <input type="range" class="slider" name="radius" aria-label="Rounded" />
+            </div>
+            <div class="field">
+              <div class="field-label"><span>Shadow</span><button type="button" class="value" data-value-for="shadow"></button></div>
+              <input type="range" class="slider" name="shadow" aria-label="Shadow" />
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Fondo</div>
+            <div class="background-grid" id="background-grid"></div>
+          </div>
+
+          <div class="field">
+            <div class="field-label spread">
+              <span>Ratio / Size</span><button type="button" class="link-button" id="ratio-custom" aria-haspopup="dialog">Personalizado…</button>
+            </div>
+            <div class="ratio-grid" id="ratio-grid"></div>
+          </div>
+
+          <div class="redact-row">
+            <label class="checkbox"><input type="checkbox" id="redact-toggle" />Redactar datos sensibles</label>
+            <span class="hint" id="redact-count">(encontrados 0)</span>
+            <button type="button" class="gear-button" id="redact-settings" title="Ajustes de redacción" aria-haspopup="dialog">
+              <span data-icon="gear" data-icon-size="17"></span>
+            </button>
+          </div>
+
+          <div class="field tight">
+            <label class="checkbox"><input type="checkbox" id="watermark-toggle" />Mostrar texto de marca de agua</label>
+            <input type="text" class="text-field" name="watermark" maxlength="80" aria-label="Texto de la marca de agua" />
+          </div>
         </aside>
       </main>
     </div>

@@ -96,3 +96,78 @@
   border: 0;
   background: none;
 }
+
+.popover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.popover-title {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.popover-title.spaced {
+  margin-top: 8px;
+}
+
+.popover-caption {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.popover-caption.error {
+  color: var(--error);
+}
+
+.push-button.default {
+  background: var(--accent);
+  color: var(--accent-text);
+  box-shadow: none;
+}
+
+.number-entry {
+  display: grid;
+  grid-template-columns: 90px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.number-entry .popover-caption {
+  grid-column: 1 / -1;
+}
+
+.ratio-entry,
+.name-entry,
+.more-backgrounds,
+.redact-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 260px;
+}
+
+.ratio-entry .text-field,
+.name-entry .text-field {
+  flex: 1;
+}
+
+.redact-settings {
+  width: 290px;
+}
+
+.more-backgrounds .color-well {
+  width: 44px;
+  height: 22px;
+}
+
+.background-grid.compact {
+  row-gap: 8px;
+}
+
+.background-grid.compact .background-name {
+  display: none;
+}
