@@ -1,7 +1,7 @@
 import { type Store, load } from "@tauri-apps/plugin-store";
 import { ANNOTATION_COLORS } from "./annotations";
 import { REDACT_CATEGORIES, type RedactSettings, defaultRedactSettings } from "./auto-redact";
-import { type StoredStyle, isRecord, parseStoredStyle, toStoredStyle } from "./persisted-style";
+import { type StoredStyle, isHexColor, isRecord, parseStoredStyle, toStoredStyle } from "./persisted-style";
 import { defaultStyle } from "./style";
 
 /** Lives in the app data directory, which the store plugin resolves relative paths against. */
@@ -63,7 +63,7 @@ export async function loadSettings(): Promise<Settings> {
   );
   settings.style = parseStoredStyle(style) ?? settings.style;
   settings.redact = parseRedact(redact) ?? settings.redact;
-  if (ANNOTATION_COLORS.includes(annotationColor as string)) settings.annotationColor = annotationColor as string;
+  if (isHexColor(annotationColor)) settings.annotationColor = annotationColor;
   if (typeof balance === "boolean") settings.balance = balance;
   settings.presets = parsePresets(presets);
   return settings;

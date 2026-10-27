@@ -42,6 +42,12 @@ pub fn hide(app: &AppHandle) {
     }
 }
 
+/// "Copiar y cerrar" and "cerrar tras copiar": the editor closes as with its close button.
+#[tauri::command]
+pub fn close_editor(app: AppHandle) {
+    hide(&app);
+}
+
 /// Whether the editor is on screen. A hidden app (⌘H or "Ocultar Snapclone") counts as not.
 pub fn is_visible(app: &AppHandle) -> bool {
     app.get_webview_window(EDITOR_WINDOW).is_some_and(|window| window.is_visible().unwrap_or(false))

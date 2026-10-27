@@ -18,7 +18,8 @@ export type PixelateAnnotation = Box & { id: string; kind: "pixelate"; auto?: Re
 export type Annotation = ArrowAnnotation | RectAnnotation | TextAnnotation | PixelateAnnotation;
 export type AnnotationKind = Annotation["kind"];
 
-export const ANNOTATION_COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#a855f7", "#ffffff", "#111827"];
+/** The first one, the system red, is the default, as in Xnapper. */
+export const ANNOTATION_COLORS = ["#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#007aff", "#af52de", "#ffffff", "#000000"];
 
 const STROKE_WIDTH = 4;
 export const TEXT_SIZE = 28;

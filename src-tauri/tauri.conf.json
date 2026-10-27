@@ -16,10 +16,18 @@
       {
         "label": "main",
         "title": "Snapclone",
-        "width": 1000,
-        "height": 700,
+        "width": 1260,
+        "height": 800,
         "center": true,
-        "visible": false
+        "visible": false,
+        "minWidth": 900,
+        "minHeight": 560,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 22
+        }
       }
     ],
     "security": {

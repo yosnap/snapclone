@@ -16,8 +16,18 @@ import type { Layout, Overlay } from "./render";
 
 export type Tool = "select" | AnnotationKind;
 
-/** Tool shortcuts, matching the letters shown in the toolbar. */
-const TOOL_KEYS: Record<string, Tool> = { v: "select", a: "arrow", r: "rect", t: "text", p: "pixelate" };
+/** Tool shortcuts: the numbers on the toolbar pills, and the letters of earlier versions. */
+const TOOL_KEYS: Record<string, Tool> = {
+  "1": "text",
+  "2": "arrow",
+  "3": "pixelate",
+  "4": "rect",
+  v: "select",
+  a: "arrow",
+  r: "rect",
+  t: "text",
+  p: "pixelate",
+};
 const MIN_SHAPE_SIZE = 4;
 const HISTORY_LIMIT = 100;
 
@@ -207,6 +217,12 @@ export class AnnotationEditor {
     return false;
   }
 
+  /** Whether a pointer event falls on the capture rather than on the background around it. */
+  isOverCapture(event: MouseEvent): boolean {
+    const geometry = this.geometry();
+    return geometry !== null && this.isInside(this.toCapturePoint(event, geometry), geometry);
+  }
+
   /** Keeps the floating text input over its anchor after the layout changes. Call after rendering. */
   syncTextEntry(): void {
     const geometry = this.geometry();
@@ -242,7 +258,7 @@ export class AnnotationEditor {
     };
   }
 
-  private toCapturePoint(event: PointerEvent, geometry: Geometry): Point {
+  private toCapturePoint(event: MouseEvent, geometry: Geometry): Point {
     const content = this.contentRect();
     return {
       x: (event.clientX - content.left) / content.cssPerPixel - geometry.layout.x,

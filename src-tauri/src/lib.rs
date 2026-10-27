@@ -7,6 +7,7 @@ mod geometry;
 mod history;
 mod images;
 mod ocr;
+mod output;
 mod import;
 #[cfg(target_os = "macos")]
 mod image_io;
@@ -15,6 +16,7 @@ mod redact;
 mod screen;
 mod scroll;
 mod selector;
+mod share_drag;
 mod shortcuts;
 mod stitch;
 mod tray;
@@ -29,6 +31,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(capture::Captures::default())
         .manage(export::PendingSave::default())
+        .manage(output::LastSaved::default())
+        .manage(output::ExportFile::default())
         .manage(selector::Selection::default())
         .manage(shortcuts::Shortcuts::default())
         .manage(scroll::ScrollCapture::default())
@@ -95,7 +99,17 @@ pub fn run() {
             import::open_image_file,
             editor_window::reopen_last_capture,
             ocr::recognize_text,
-            ocr::copy_capture_text
+            ocr::copy_capture_text,
+            output::quick_save,
+            output::choose_save_folder,
+            output::set_file_name_pattern,
+            output::reveal_saved,
+            output::open_save_folder,
+            output::send_feedback,
+            output::prepare_export,
+            share_drag::share_export,
+            share_drag::drag_export,
+            editor_window::close_editor
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));

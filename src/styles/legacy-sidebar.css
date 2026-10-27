@@ -1,0 +1,150 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--surface);
+}
+
+fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+legend,
+.slider span,
+.field span {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+output {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+.swatch {
+  aspect-ratio: 1;
+  margin: 0;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.swatch[aria-pressed="true"] {
+  border-color: var(--fg);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+input[type="color"] {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+}
+
+.file-button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.slider,
+.field {
+  display: flex;
+  flex-direction: column;
+}
+
+input[type="range"] {
+  width: 100%;
+}
+
+select,
+input[type="text"] {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preset-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.preset-actions button {
+  flex: 1;
+}
+
+button.compact {
+  padding: 4px 10px;
+}
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+}
+
+/* The desktop picture swatch, saturated like the background it stands for. */
+.wallpaper-swatch {
+  filter: saturate(1.4);
+}
+
+.sidebar {
+  flex: none;
+  width: 300px;
+}
+
+.sidebar button {
+  padding: 3px 10px;
+  border-radius: 5px;
+  box-shadow: 0 0 0 0.5px var(--pill-border);
+}

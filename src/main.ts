@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { AnnotationEditor, type Tool } from "./annotation-editor";
-import { ANNOTATION_COLORS, type PixelateAnnotation, type Point, moved } from "./annotations";
+import { AnnotationEditor } from "./annotation-editor";
+import { type PixelateAnnotation, type Point, moved } from "./annotations";
 import {
   type RedactCategory,
   type SensitiveRegion,
@@ -14,10 +14,13 @@ import { type BalanceResult, analyzeBalance, balancedCanvas, readPixels } from "
 import { type CaptureDocument, parseCaptureDocument } from "./capture-document";
 import { bindControls } from "./controls";
 import { DocumentSaver } from "./document-saver";
-import { copyToClipboard, saveToFile } from "./export";
+import { BottomBar } from "./bottom-bar";
+import { copyToClipboard, prepareExport, quickSave, saveToFile } from "./export";
 import { HistoryView, type OpenedCapture, captureUrl } from "./history-view";
+import { fillIcons } from "./icons";
 import { highlightDrops, listenNotices, openClipboard, openFile } from "./open-image";
 import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
+import { type MenuItem, closePopover, popoverContains } from "./popover";
 import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
 import { bindReopen, reopenLast } from "./reopen-last";
@@ -26,23 +29,27 @@ import { SettingsView } from "./settings-view";
 import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
 import { TextView } from "./text-view";
+import { bindTopToolbar } from "./top-toolbar";
 import { isEditableTarget } from "./ui-helpers";
 import { requestWallpaper, wallpaperError } from "./wallpaper";
+import { Zoom } from "./zoom";
 
 type CaptureReady = { id: string; scale: number };
 
+fillIcons();
 const canvas = document.querySelector<HTMLCanvasElement>("#editor-canvas")!;
+const canvasArea = document.querySelector<HTMLElement>("#canvas-area")!;
 const emptyState = document.querySelector<HTMLElement>("#empty-state")!;
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const status = document.querySelector<HTMLElement>("#status")!;
-const copyButton = document.querySelector<HTMLButtonElement>("#copy-button")!;
-const saveButton = document.querySelector<HTMLButtonElement>("#save-button")!;
-const toolbar = document.querySelector<HTMLElement>("#toolbar")!;
+const titlebar = document.querySelector<HTMLElement>(".titlebar")!;
+const shareButton = document.querySelector<HTMLButtonElement>("#share-button")!;
 const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
 const balanceToggle = document.querySelector<HTMLInputElement>("#balance-toggle")!;
-const historyButton = document.querySelector<HTMLButtonElement>("#history-button")!;
-const settingsButton = document.querySelector<HTMLButtonElement>("#settings-button")!;
-const textButton = document.querySelector<HTMLButtonElement>("#text-button")!;
+/** How long a message stays over the canvas; errors stay longer. */
+const STATUS_MS = 3500;
+const ERROR_STATUS_MS = 8000;
+let statusTimer: number | undefined;
 
 const style = defaultStyle();
 const redactSettings = defaultRedactSettings();
@@ -98,8 +105,14 @@ const editor = new AnnotationEditor(
   },
 );
 
+/** Reflects the editor's tool and colour on the title bar; replaced once it is bound. */
+let syncToolbar = () => {};
+
+const zoom = new Zoom(canvasArea, canvas, () => capture?.scale ?? null, (label) => bottomBar.setZoomLabel(label));
+
 function scheduleDocumentSave(): void {
-  if (!captureId) return;
+  // The development preview has no history to save into.
+  if (!captureId || outsideTauri) return;
   documentSaver.schedule(captureId, currentDocument);
 }
 
@@ -120,6 +133,7 @@ function scheduleRender(): void {
     renderQueued = false;
     if (!capture) return;
     render(canvas, capture, style, editor.overlay(true));
+    zoom.update();
     editor.syncTextEntry();
   });
 }
@@ -143,7 +157,11 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   image.crossOrigin = "anonymous";
   image.src = captureUrl(id);
   await image.decode();
+  showImage(image, scale, id, saved);
+}
 
+function showImage(image: HTMLImageElement, scale: number, id: string, saved: CaptureDocument | null = null): void {
+  closePopover();
   // The previous capture's pending edits are built from the current state: save them first.
   void documentSaver.flush();
   original = makeCapture(image, scale);
@@ -169,7 +187,7 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   }
   requireWallpaper();
   // Skip Vision entirely while every category is off; enabling one runs it on demand.
-  if (Object.values(redactSettings).some(Boolean)) runAutoRedaction(id);
+  if (!outsideTauri && Object.values(redactSettings).some(Boolean)) runAutoRedaction(id);
   scheduleRender();
 }
 
@@ -251,9 +269,8 @@ function shifted(regions: PixelateAnnotation[]): PixelateAnnotation[] {
 
 function syncExportButtons(): void {
   const blocked = !capture || detectingFor === captureId;
-  copyButton.disabled = blocked;
-  saveButton.disabled = blocked;
-  textButton.disabled = !capture;
+  bottomBar.setExportEnabled(!blocked);
+  shareButton.disabled = blocked;
 }
 
 function regionsOf(category: RedactCategory): PixelateAnnotation[] {
@@ -298,16 +315,24 @@ function toggleRedaction(category: RedactCategory, enabled: boolean): void {
 }
 
 function showStatus(message: string, isError = false): void {
+  window.clearTimeout(statusTimer);
   status.textContent = message;
   status.classList.toggle("error", isError);
+  status.hidden = !message;
+  if (message) {
+    statusTimer = window.setTimeout(() => {
+      // A newer message keeps its own timer.
+      if (status.textContent === message && message !== SEARCHING_MESSAGE) status.hidden = true;
+    }, isError ? ERROR_STATUS_MS : STATUS_MS);
+  }
 }
 
 /** Renders synchronously before exporting, so a pending frame never leaks into the output. */
-async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string | null>, failure: string) {
-  if (!capture || exporting) return;
+async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string | null>, failure: string): Promise<boolean> {
+  if (!capture || exporting) return false;
   if (detectingFor === captureId) {
     showStatus("Espera a que termine la búsqueda de datos sensibles", true);
-    return;
+    return false;
   }
   exporting = true;
   try {
@@ -317,14 +342,16 @@ async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string 
         await requestWallpaper();
       } catch (error) {
         showStatus(`No se ha exportado: el fondo de escritorio no está disponible (${wallpaperError(error)})`, true);
-        return;
+        return false;
       }
     }
     render(canvas, capture, style, editor.overlay(false));
     const message = await action(canvas);
     if (message) showStatus(message);
+    return true;
   } catch (error) {
     showStatus(`${failure}: ${error}`, true);
+    return false;
   } finally {
     exporting = false;
     scheduleRender();
@@ -337,8 +364,69 @@ const copy = () =>
     return "Copiada al portapapeles";
   }, "No se pudo copiar");
 
-const saveImage = () =>
+const saveAs = () =>
   exportWith(async (target) => ((await saveToFile(target)) ? "Imagen guardada" : null), "No se pudo guardar");
+
+const save = () =>
+  exportWith(async (target) => {
+    const path = await quickSave(target);
+    return path ? `Guardada en ${path}` : null;
+  }, "No se pudo guardar");
+
+/** Double-click on the background: copy, then close the editor like its close button. */
+async function copyAndClose(): Promise<void> {
+  if (!(await copy())) return;
+  invoke("close_editor").catch((error) => showStatus(`No se pudo cerrar el editor: ${error}`, true));
+}
+
+/** The image file "Compartir" and "Arrástrame" hand to macOS, written by Rust. */
+const prepareShared = () => exportWith(async (target) => (await prepareExport(target), null), "No se pudo preparar la imagen");
+
+async function share(anchor: HTMLElement): Promise<void> {
+  if (!(await prepareShared())) return;
+  const box = anchor.getBoundingClientRect();
+  const position = { x: box.left, y: box.top, width: box.width, height: box.height };
+  invoke("share_export", { anchor: position }).catch((error) => showStatus(`No se pudo compartir: ${error}`, true));
+}
+
+function copyDetectedText(): void {
+  if (!captureId) return;
+  invoke<number>("copy_capture_text", { id: captureId }).then(
+    (lines) => showStatus(lines === 1 ? "Copiada 1 línea de texto" : `Copiadas ${lines} líneas de texto`),
+    (error) => showStatus(String(error), true),
+  );
+}
+
+function revealSaved(): void {
+  invoke("reveal_saved").catch((error) => showStatus(`No se pudo abrir el Finder: ${error}`, true));
+}
+
+function moreItems(): MenuItem[] {
+  const noCapture = !capture;
+  return [
+    { label: "Abrir en el Finder", action: revealSaved },
+    { label: "Copiar texto detectado", action: copyDetectedText, disabled: noCapture },
+    { label: "Ver texto detectado…", action: () => captureId && void textView.show(captureId), disabled: noCapture },
+    "separator",
+    { label: "Nueva captura", action: startCapture },
+    { label: "Abrir archivo…", shortcut: "⌘O", action: () => openFile(showStatus) },
+    { label: "Historial", action: () => void historyView.show() },
+    "separator",
+    { label: "Deshacer", shortcut: "⌘Z", action: () => editor.undo(), disabled: noCapture },
+    { label: "Rehacer", shortcut: "⇧⌘Z", action: () => editor.redo(), disabled: noCapture },
+    "separator",
+    { label: "Ajustes…", shortcut: "⌘,", action: openSettings },
+  ];
+}
+
+const bottomBar = new BottomBar(zoom, {
+  copy,
+  save,
+  saveAs,
+  prepareDrag: prepareShared,
+  dragFailed: (error) => showStatus(`No se pudo arrastrar la imagen: ${error}`, true),
+  moreItems,
+});
 
 function startCapture(): void {
   if (outsideTauri) return;
@@ -381,10 +469,21 @@ async function init(): Promise<void> {
     saveSetting("balance", balanceToggle.checked);
     applyBalance(balanceToggle.checked);
   });
-  buildToolbar();
+  syncToolbar = bindTopToolbar(titlebar, editor, {
+    colorChanged: (color) => saveSetting("annotationColor", color),
+    share: (anchor) => void share(anchor),
+    notify: showStatus,
+  });
+  editor.setTool("select");
 
-  // The Vite dev server is reachable from any browser, but only the Tauri window has the Rust bridge.
+  // The Vite dev server is reachable from any browser, but only the Tauri window has the Rust
+  // bridge. In development, `?preview=1` loads a sample capture to check the layout instead.
   if (outsideTauri) {
+    if (import.meta.env.DEV && new URLSearchParams(location.search).has("preview")) {
+      const { loadPreview } = await import("./dev-preview");
+      await loadPreview((image) => showImage(image, 2, "preview"));
+      return;
+    }
     document.querySelectorAll<HTMLButtonElement>("button").forEach((button) => (button.disabled = true));
     showStatus("Esto es la vista web en un navegador. Usa la ventana de Snapclone que abre «npm run tauri dev».", true);
   }
@@ -396,22 +495,20 @@ init().catch((error) => showStatus(`No se pudo iniciar el editor: ${error}`, tru
 document.querySelectorAll<HTMLButtonElement>("[data-action=capture]").forEach((button) => {
   button.addEventListener("click", startCapture);
 });
-copyButton.addEventListener("click", copy);
-// ⌘O reaches Rust through the File menu, which works with the editor hidden too.
-document.querySelector<HTMLButtonElement>("#open-button")!.addEventListener("click", () => openFile(showStatus));
-saveButton.addEventListener("click", saveImage);
+canvas.addEventListener("dblclick", (event) => {
+  if (capture && editor.tool === "select" && !editor.isOverCapture(event)) void copyAndClose();
+});
+canvasArea.addEventListener("dblclick", (event) => {
+  if (capture && event.target === canvasArea.firstElementChild) void copyAndClose();
+});
 
 const historyView = new HistoryView({
   open: reopenCapture,
   deleted: captureDeleted,
   notify: showStatus,
 });
-historyButton.addEventListener("click", () => historyView.show());
 
 const textView = new TextView();
-textButton.addEventListener("click", () => {
-  if (captureId) void textView.show(captureId);
-});
 
 /** The empty editor names the zone shortcut as it is configured right now. */
 function showZoneShortcut(entries: ShortcutEntry[]): void {
@@ -431,7 +528,6 @@ function openSettings(): void {
   historyView.close();
   settingsView.show().catch((error) => showStatus(`No se pudieron abrir los ajustes: ${error}`, true));
 }
-settingsButton.addEventListener("click", openSettings);
 
 document.addEventListener("keydown", (event) => {
   if (historyView.isOpen || textView.isOpen) {
@@ -441,7 +537,7 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if (settingsView.isOpen) return;
+  if (settingsView.isOpen || popoverContains(event.target)) return;
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
   const inForm = editingText || event.target instanceof HTMLSelectElement;
   // ⇧⌘Z: native redo in a field, the editor's redo with a capture, otherwise reopen the last one.
@@ -456,13 +552,36 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
-  if (!event.metaKey || event.shiftKey || event.altKey || event.repeat) return;
-  if (event.key === "c" && !editingText) {
+  if (event.metaKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === "s") {
+    event.preventDefault();
+    saveAs();
+    return;
+  }
+  if (!event.metaKey || event.shiftKey || event.altKey) {
+    // ⌘+ is ⇧⌘= on most layouts.
+    if (event.metaKey && !event.altKey && event.key === "+") {
+      event.preventDefault();
+      zoom.zoomIn();
+    }
+    return;
+  }
+  if (event.key === "=" || event.key === "+") {
+    event.preventDefault();
+    zoom.zoomIn();
+  } else if (event.key === "-") {
+    event.preventDefault();
+    zoom.zoomOut();
+  } else if (event.key === "0") {
+    event.preventDefault();
+    zoom.set("fit");
+  } else if (event.repeat) {
+    return;
+  } else if (event.key === "c" && !editingText) {
     event.preventDefault();
     copy();
   } else if (event.key === "s") {
     event.preventDefault();
-    saveImage();
+    save();
   } else if (event.key === "v" && !isEditableTarget(event.target) && !outsideTauri) {
     event.preventDefault();
     openClipboard(showStatus);
@@ -492,40 +611,5 @@ if (!outsideTauri) {
   listen<string>("capture-failed", (event) => {
     historyView.close();
     showStatus(`No se pudo hacer la captura: ${event.payload}`, true);
-  });
-}
-
-function buildToolbar(): void {
-  const colors = toolbar.querySelector<HTMLElement>("#annotation-colors")!;
-  for (const color of ANNOTATION_COLORS) {
-    const swatch = document.createElement("button");
-    swatch.type = "button";
-    swatch.className = "color-swatch";
-    swatch.dataset.color = color;
-    swatch.title = color;
-    swatch.style.background = color;
-    colors.append(swatch);
-  }
-  toolbar.addEventListener("click", (event) => {
-    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
-    if (!button) return;
-    if (button.dataset.tool) editor.setTool(button.dataset.tool as Tool);
-    else if (button.dataset.color) {
-      editor.setColor(button.dataset.color);
-      saveSetting("annotationColor", editor.color);
-    }
-    else if (button.dataset.history === "undo") editor.undo();
-    else if (button.dataset.history === "redo") editor.redo();
-    syncToolbar();
-  });
-  editor.setTool("select");
-}
-
-function syncToolbar(): void {
-  toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
-    button.setAttribute("aria-pressed", String(button.dataset.tool === editor.tool));
-  });
-  toolbar.querySelectorAll<HTMLButtonElement>("[data-color]").forEach((button) => {
-    button.setAttribute("aria-pressed", String(button.dataset.color === editor.color));
   });
 }

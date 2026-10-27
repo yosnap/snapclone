@@ -9,34 +9,66 @@
   </head>
 
   <body>
-    <main class="editor">
-      <section class="stage">
-        <div id="toolbar" class="toolbar" role="toolbar" aria-label="Anotaciones">
-          <div class="tool-group">
-            <button type="button" class="tool" data-tool="select" title="Seleccionar y mover (V)">↖ Mover</button>
-            <button type="button" class="tool" data-tool="arrow" title="Flecha (A)">↗ Flecha</button>
-            <button type="button" class="tool" data-tool="rect" title="Rectángulo (R)">▭ Rectángulo</button>
-            <button type="button" class="tool" data-tool="text" title="Texto (T)">T Texto</button>
-            <button type="button" class="tool" data-tool="pixelate" title="Pixelar (P)">▦ Pixelar</button>
-          </div>
-          <div id="annotation-colors" class="tool-group" aria-label="Color"></div>
-          <div class="tool-group">
-            <button type="button" class="tool" data-history="undo" title="Deshacer (⌘Z)">↶</button>
-            <button type="button" class="tool" data-history="redo" title="Rehacer (⇧⌘Z)">↷</button>
-          </div>
+    <div class="window">
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="tool-pills" id="toolbar" role="toolbar" aria-label="Anotaciones" data-tauri-drag-region>
+          <button type="button" class="pill tool-pill" data-tool="text" style="--pill-width: 54px" title="Texto (1): pulsa otra vez para cambiar el tamaño">
+            <span data-icon="text"></span><span class="pill-number">1</span>
+          </button>
+          <button type="button" class="pill tool-pill" data-tool="arrow" style="--pill-width: 84px" title="Flecha (2): pulsa otra vez para cambiar el estilo">
+            <span data-icon="arrow"></span><span class="pill-number">2</span>
+          </button>
+          <button type="button" class="pill tool-pill" data-tool="redact" style="--pill-width: 286px" title="Redactar (3)">
+            <span data-icon="eraser"></span><span class="pill-number">3</span>
+          </button>
+          <button type="button" class="pill tool-pill" data-tool="shape" style="--pill-width: 127px" title="Formas (4): pulsa otra vez para cambiar la forma">
+            <span data-icon="shapes"></span><span class="pill-number">4</span>
+          </button>
+          <button type="button" class="pill color-pill" id="color-button" title="Color de las anotaciones" aria-haspopup="dialog">
+            <span class="color-chip" id="color-chip"></span>
+          </button>
+          <button type="button" class="pill tip-pill" id="tip-button">Tip: usa las teclas numéricas (1, 2, 3, 4)</button>
         </div>
-        <div class="canvas-area">
-          <div id="empty-state" class="empty-state">
-            <p id="empty-hint">Usa el botón o el icono de la barra de menús.</p>
-            <p class="empty-extra">También puedes arrastrar aquí una imagen o pegarla con <kbd>⌘V</kbd>.</p>
-            <button type="button" data-action="capture">Capturar región</button>
-          </div>
-          <canvas id="editor-canvas" hidden></canvas>
-        </div>
-        <input id="text-entry" class="text-entry" type="text" hidden aria-label="Texto de la anotación" />
-      </section>
+        <div class="titlebar-spacer" data-tauri-drag-region></div>
+        <button type="button" class="pill feedback-pill" id="feedback-button">Enviar comentarios</button>
+        <button type="button" class="pill icon-pill" id="share-button" title="Compartir" aria-label="Compartir" disabled>
+          <span data-icon="share" data-icon-size="17"></span>
+        </button>
+      </header>
 
-      <aside id="sidebar" class="sidebar">
+      <main class="workspace">
+        <section class="stage">
+          <div class="canvas-area" id="canvas-area">
+            <div class="canvas-scroll" id="canvas-scroll">
+              <canvas id="editor-canvas" hidden></canvas>
+            </div>
+            <div id="empty-state" class="empty-state">
+              <p id="empty-hint">Usa el botón o el icono de la barra de menús.</p>
+              <p class="empty-extra">También puedes arrastrar aquí una imagen o pegarla con <kbd>⌘V</kbd>.</p>
+              <button type="button" class="push-button" data-action="capture">Capturar región</button>
+            </div>
+            <input id="text-entry" class="text-entry" type="text" hidden aria-label="Texto de la anotación" />
+            <p id="status" class="toast" role="status" hidden></p>
+          </div>
+          <footer class="bottom-bar">
+            <div class="bottom-actions">
+              <div class="drag-pill" id="drag-button" role="button" tabindex="-1" aria-disabled="true" title="Arrastra la imagen a otra app">
+                <span data-icon="grip" data-icon-size="18"></span><span>Arrástrame</span>
+              </div>
+              <button type="button" class="bar-button" id="copy-button" disabled>Copiar ⌘C</button>
+              <button type="button" class="bar-button" id="save-button" disabled>Guardar ⌘S</button>
+              <button type="button" class="bar-button" id="save-as-button" disabled>Guardar como…</button>
+              <button type="button" class="bar-button zoom-button" id="zoom-button" aria-haspopup="menu">
+                <span id="zoom-label">100%</span><span data-icon="chevron-down" data-icon-size="12"></span>
+              </button>
+              <button type="button" class="bar-button" id="more-button" aria-haspopup="menu">Más…</button>
+            </div>
+            <p class="bottom-tip">Doble clic en el fondo = Copiar y cerrar</p>
+          </footer>
+        </section>
+        <div class="split-divider" aria-hidden="true"></div>
+
+        <aside id="sidebar" class="sidebar">
         <fieldset>
           <legend>Fondo</legend>
           <div id="background-swatches" class="swatches"></div>
@@ -90,18 +122,9 @@
           <div id="redact-options" class="checks"></div>
         </fieldset>
 
-        <div class="actions">
-          <button id="copy-button" type="button" disabled>Copiar <kbd>⌘C</kbd></button>
-          <button id="save-button" type="button" class="secondary" disabled>Guardar <kbd>⌘S</kbd></button>
-          <button type="button" class="secondary" data-action="capture">Nueva captura</button>
-          <button type="button" id="open-button" class="secondary" title="Abrir una imagen PNG o JPEG (⌘O). También puedes arrastrarla aquí.">Abrir… <kbd>⌘O</kbd></button>
-          <button type="button" id="text-button" class="secondary" title="Ver y copiar el texto de la captura" disabled>Texto</button>
-          <button type="button" id="history-button" class="secondary">Historial</button>
-          <button type="button" id="settings-button" class="secondary" title="Ajustes (⌘,)">Ajustes</button>
-        </div>
-        <p id="status" class="status" role="status"></p>
-      </aside>
-    </main>
+        </aside>
+      </main>
+    </div>
 
     <div id="history" class="history" role="dialog" aria-modal="true" aria-labelledby="history-title" hidden>
       <div class="history-panel">
