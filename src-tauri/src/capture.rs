@@ -10,7 +10,10 @@ use std::{
 use serde::Serialize;
 use tauri::{http, AppHandle, Emitter, Manager};
 
-use crate::history;
+use crate::{history, selector};
+
+/// Lets the editor window finish hiding so it is not in the frozen screenshots.
+const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
 
 pub const EDITOR_WINDOW: &str = "main";
 const READY_EVENT: &str = "capture-ready";
@@ -57,9 +60,23 @@ async fn capture_region(app: AppHandle) {
         return;
     }
 
-    let editor = app.get_webview_window(EDITOR_WINDOW);
-    if let Some(window) = &editor {
+    if let Some(window) = app.get_webview_window(EDITOR_WINDOW)
+        && window.is_visible().unwrap_or(false)
+    {
         let _ = window.hide();
+        tokio::time::sleep(HIDE_SETTLE).await;
+    }
+
+    // The own selector keeps `in_progress` set until the selection ends; see `selection_ended`.
+    let opened = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || selector::open(&app)
+    })
+    .await
+    .unwrap_or_else(|error| Err(error.to_string()));
+    match opened {
+        Ok(()) => return,
+        Err(error) => eprintln!("own selector unavailable, using screencapture -i: {error}"),
     }
 
     let result = match capture_dir(&app) {
@@ -78,8 +95,13 @@ async fn capture_region(app: AppHandle) {
     }
 }
 
+/// Called when the own selector closes, whether a capture was taken or not.
+pub fn selection_ended(app: &AppHandle) {
+    app.state::<Captures>().in_progress.store(false, Ordering::SeqCst);
+}
+
 /// Registers a finished capture, stores it in the history and hands it to the editor.
-fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
+pub fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
     history::record(app, &id, &path, scale);
     app.state::<Captures>().files.lock().unwrap().insert(id.clone(), path);
     if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
@@ -93,7 +115,7 @@ fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
 
 /// Captures live in the app data directory, next to the history that points at them, so
 /// the system never purges them the way it may purge caches.
-fn capture_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub fn capture_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -103,7 +125,8 @@ fn capture_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Runs the native interactive selector. Returns `None` when the user cancels with Esc.
+/// Runs the native interactive selector, the fallback when the own one cannot capture the
+/// screens. Returns `None` when the user cancels with Esc.
 async fn run_screencapture(dir: &Path) -> Result<Option<(String, PathBuf)>, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let path = dir.join(format!("{id}.png"));

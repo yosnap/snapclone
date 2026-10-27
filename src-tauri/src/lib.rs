@@ -2,6 +2,7 @@ mod capture;
 mod export;
 mod history;
 mod redact;
+mod selector;
 mod tray;
 
 use tauri::{Manager, WindowEvent};
@@ -15,6 +16,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(capture::Captures::default())
         .manage(export::PendingSave::default())
+        .manage(selector::Selection::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -32,13 +34,13 @@ pub fn run() {
             });
         })
         // Menu bar app: closing the editor hides it instead of quitting.
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event
-                && window.label() == capture::EDITOR_WINDOW
-            {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } if window.label() == capture::EDITOR_WINDOW => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            WindowEvent::Destroyed => selector::on_window_destroyed(window.app_handle(), window.label()),
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             capture::start_capture,
@@ -49,7 +51,12 @@ pub fn run() {
             history::list_history,
             history::save_document,
             history::open_history,
-            history::delete_history
+            history::delete_history,
+            selector::selector_info,
+            selector::selector_frame,
+            selector::cancel_selection,
+            selector::finish_selection,
+            selector::finish_window
         ])
         .setup(move |app| {
             app.manage(history::History::open(app.handle()));
