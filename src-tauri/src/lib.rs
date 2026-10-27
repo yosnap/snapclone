@@ -1,4 +1,5 @@
 mod capture;
+mod export;
 mod tray;
 
 use tauri::WindowEvent;
@@ -10,6 +11,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(capture::Captures::default())
+        .manage(export::PendingSave::default())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -34,7 +37,12 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![capture::start_capture])
+        .invoke_handler(tauri::generate_handler![
+            capture::start_capture,
+            export::copy_png,
+            export::choose_save_path,
+            export::save_image
+        ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);

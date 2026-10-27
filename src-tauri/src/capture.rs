@@ -23,6 +23,8 @@ pub struct Captures {
 #[derive(Clone, Serialize)]
 struct CaptureReady {
     id: String,
+    /// Pixels per point of the captured display, so styling lengths match the image.
+    scale: f64,
 }
 
 /// Starts a region capture in the background; ignored while another one is running.
@@ -54,12 +56,13 @@ async fn capture_region(app: AppHandle) {
 
     match result {
         Ok(Some((id, path))) => {
+            let scale = std::fs::read(&path).map_or(1.0, |bytes| png_scale(&bytes));
             captures.files.lock().unwrap().insert(id.clone(), path);
             if let Some(window) = &editor {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-            if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id }) {
+            if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale }) {
                 eprintln!("capture-ready emit failed: {error}");
             }
         }
@@ -83,7 +86,8 @@ async fn run_screencapture(dir: &Path) -> Result<Option<(String, PathBuf)>, Stri
     let id = uuid::Uuid::new_v4().to_string();
     let path = dir.join(format!("{id}.png"));
     let status = tokio::process::Command::new("/usr/sbin/screencapture")
-        .args(["-i", "-x"])
+        // -o drops the macOS window shadow; the editor draws its own.
+        .args(["-i", "-x", "-o"])
         .arg(&path)
         .status()
         .await
@@ -93,6 +97,31 @@ async fn run_screencapture(dir: &Path) -> Result<Option<(String, PathBuf)>, Stri
         return Ok(None);
     }
     Ok(Some((id, path)))
+}
+
+/// Reads the display scale from the PNG `pHYs` chunk: screencapture stores 144 DPI for
+/// Retina captures and omits the chunk at 1x, which falls back to 1.
+fn png_scale(png: &[u8]) -> f64 {
+    const POINTS_PER_INCH: f64 = 72.0;
+    const METERS_PER_INCH: f64 = 0.0254;
+    let mut offset = 8;
+    while let Some(header) = png.get(offset..offset + 8) {
+        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        let kind = &header[4..8];
+        if kind == b"IDAT" {
+            break;
+        }
+        if kind == b"pHYs"
+            && let Some(data) = png.get(offset + 8..offset + 17)
+            && data[8] == 1
+        {
+            let pixels_per_meter = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            let scale = (f64::from(pixels_per_meter) * METERS_PER_INCH / POINTS_PER_INCH).round();
+            return scale.max(1.0);
+        }
+        offset += 12 + length;
+    }
+    1.0
 }
 
 /// Serves `capture://localhost/<id>` with CORS so the editor canvas stays exportable.
@@ -105,4 +134,40 @@ pub fn serve(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Respons
         None => response.status(404).body(Vec::new()),
     }
     .expect("static response parts are valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::png_scale;
+
+    fn png_with_chunks(chunks: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        for (kind, data) in chunks {
+            png.extend((data.len() as u32).to_be_bytes());
+            png.extend(*kind);
+            png.extend(data);
+            png.extend([0; 4]); // CRC is not checked
+        }
+        png
+    }
+
+    fn phys(pixels_per_meter: u32, unit: u8) -> Vec<u8> {
+        let mut data = pixels_per_meter.to_be_bytes().to_vec();
+        data.extend(pixels_per_meter.to_be_bytes());
+        data.push(unit);
+        data
+    }
+
+    #[test]
+    fn retina_capture_is_scale_two() {
+        let png = png_with_chunks(&[(b"IHDR", vec![0; 13]), (b"pHYs", phys(5669, 1)), (b"IDAT", vec![])]);
+        assert_eq!(png_scale(&png), 2.0);
+    }
+
+    #[test]
+    fn missing_or_unitless_phys_is_scale_one() {
+        assert_eq!(png_scale(&png_with_chunks(&[(b"IHDR", vec![0; 13]), (b"IDAT", vec![])])), 1.0);
+        assert_eq!(png_scale(&png_with_chunks(&[(b"pHYs", phys(5669, 0))])), 1.0);
+        assert_eq!(png_scale(b"not a png"), 1.0);
+    }
 }
