@@ -10,6 +10,8 @@ use std::{
 use serde::Serialize;
 use tauri::{http, AppHandle, Emitter, Manager};
 
+use crate::history;
+
 pub const EDITOR_WINDOW: &str = "main";
 const READY_EVENT: &str = "capture-ready";
 
@@ -27,9 +29,16 @@ struct CaptureReady {
     scale: f64,
 }
 
-/// Path of a capture taken in this session, if the id is known.
+/// Path of a capture taken in this session or stored in the history, if the id is known.
+/// Paths only ever come from Rust, never from the webview.
 pub fn path_of(app: &AppHandle, id: &str) -> Option<PathBuf> {
-    app.state::<Captures>().files.lock().unwrap().get(id).cloned()
+    let session = app.state::<Captures>().files.lock().unwrap().get(id).cloned();
+    session.or_else(|| history::path_of(app, id))
+}
+
+/// Drops a deleted capture from this session's lookup table.
+pub fn forget(app: &AppHandle, id: &str) {
+    app.state::<Captures>().files.lock().unwrap().remove(id);
 }
 
 /// Starts a region capture in the background; ignored while another one is running.
@@ -62,24 +71,32 @@ async fn capture_region(app: AppHandle) {
     match result {
         Ok(Some((id, path))) => {
             let scale = std::fs::read(&path).map_or(1.0, |bytes| png_scale(&bytes));
-            captures.files.lock().unwrap().insert(id.clone(), path);
-            if let Some(window) = &editor {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-            if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale }) {
-                eprintln!("capture-ready emit failed: {error}");
-            }
+            deliver(&app, id, path, scale);
         }
         Ok(None) => {}
         Err(error) => eprintln!("capture failed: {error}"),
     }
 }
 
+/// Registers a finished capture, stores it in the history and hands it to the editor.
+fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
+    history::record(app, &id, &path, scale);
+    app.state::<Captures>().files.lock().unwrap().insert(id.clone(), path);
+    if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale }) {
+        eprintln!("capture-ready emit failed: {error}");
+    }
+}
+
+/// Captures live in the app data directory, next to the history that points at them, so
+/// the system never purges them the way it may purge caches.
 fn capture_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
-        .app_cache_dir()
+        .app_data_dir()
         .map_err(|error| error.to_string())?
         .join("captures");
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;

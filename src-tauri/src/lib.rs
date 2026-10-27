@@ -1,9 +1,10 @@
 mod capture;
 mod export;
+mod history;
 mod redact;
 mod tray;
 
-use tauri::WindowEvent;
+use tauri::{Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -44,9 +45,14 @@ pub fn run() {
             export::copy_png,
             export::choose_save_path,
             export::save_image,
-            redact::detect_sensitive
+            redact::detect_sensitive,
+            history::list_history,
+            history::save_document,
+            history::open_history,
+            history::delete_history
         ])
         .setup(move |app| {
+            app.manage(history::History::open(app.handle()));
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::build(app.handle())?;

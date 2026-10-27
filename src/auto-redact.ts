@@ -36,8 +36,11 @@ export function toPixelateAnnotations(
   return regions.map((region) => {
     const x = Math.max(0, region.x * imageWidth - margin);
     const y = Math.max(0, region.y * imageHeight - margin);
+    // Ids derive from the box so a capture reopened from the history, whose regions were
+    // saved with it, gets the same ids when detection runs again and nothing is duplicated.
+    const box = [region.x, region.y, region.width, region.height].map((value) => value.toFixed(6)).join(",");
     return {
-      id: crypto.randomUUID(),
+      id: `auto:${region.category}:${box}`,
       kind: "pixelate",
       auto: region.category,
       x,

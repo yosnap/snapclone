@@ -11,8 +11,11 @@ import {
   toPixelateAnnotations,
 } from "./auto-redact";
 import { type BalanceResult, analyzeBalance, balancedCanvas, readPixels } from "./balance";
+import { type CaptureDocument, parseCaptureDocument } from "./capture-document";
 import { bindControls } from "./controls";
+import { DocumentSaver } from "./document-saver";
 import { copyToClipboard, saveToFile } from "./export";
+import { HistoryView, type OpenedCapture, captureUrl } from "./history-view";
 import { applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
@@ -30,6 +33,7 @@ const saveButton = document.querySelector<HTMLButtonElement>("#save-button")!;
 const toolbar = document.querySelector<HTMLElement>("#toolbar")!;
 const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
 const balanceToggle = document.querySelector<HTMLInputElement>("#balance-toggle")!;
+const historyButton = document.querySelector<HTMLButtonElement>("#history-button")!;
 
 const style = defaultStyle();
 const redactSettings = defaultRedactSettings();
@@ -53,6 +57,13 @@ let detectingFor: string | null = null;
 const SEARCHING_MESSAGE = "Buscando datos sensibles…";
 let renderQueued = false;
 let exporting = false;
+/** Redraws the sidebar from `style`; replaced once the controls are bound. */
+let refreshControls = () => {};
+
+const documentSaver = new DocumentSaver((id, error) => {
+  console.error("capture document could not be saved", error);
+  if (id === captureId) showStatus(`No se pudo guardar la edición en el historial: ${error}`, true);
+});
 
 const editor = new AnnotationEditor(
   canvas,
@@ -69,8 +80,24 @@ const editor = new AnnotationEditor(
   () => {
     syncToolbar();
     scheduleRender();
+    scheduleDocumentSave();
   },
 );
+
+function scheduleDocumentSave(): void {
+  if (!captureId) return;
+  documentSaver.schedule(captureId, currentDocument);
+}
+
+function currentDocument(): CaptureDocument {
+  return {
+    version: 1,
+    style: toStoredStyle(style),
+    balance: balanceToggle.checked,
+    shift: { ...shift },
+    annotations: editor.snapshot(),
+  };
+}
 
 function scheduleRender(): void {
   if (!capture || renderQueued) return;
@@ -83,17 +110,16 @@ function scheduleRender(): void {
   });
 }
 
-function captureUrl(id: string): string {
-  return `capture://localhost/${id}`;
-}
-
-async function loadCapture({ id, scale }: CaptureReady): Promise<void> {
+/** Opens a capture; `saved` restores the style and annotations it had in the history. */
+async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument | null = null): Promise<void> {
   const image = new Image();
   // Served with CORS so the canvas is not tainted and can be exported.
   image.crossOrigin = "anonymous";
   image.src = captureUrl(id);
   await image.decode();
 
+  // The previous capture's pending edits are built from the current state: save them first.
+  documentSaver.flush();
   original = makeCapture(image, scale);
   capture = original;
   captureId = id;
@@ -105,10 +131,42 @@ async function loadCapture({ id, scale }: CaptureReady): Promise<void> {
   canvas.hidden = false;
   showStatus("");
   syncExportButtons();
+  if (saved) {
+    applyStoredStyle(style, saved.style);
+    refreshControls();
+    saveSetting("style", saved.style);
+    balanceToggle.checked = saved.balance;
+    saveSetting("balance", saved.balance);
+  }
+  if (balanceToggle.checked) applyBalance(true);
+  if (saved) {
+    // Saved annotations sit where the content was then; follow it if balancing moved it.
+    editor.load(saved.annotations);
+    editor.translate(shift.x - saved.shift.x, shift.y - saved.shift.y);
+  }
   // Skip Vision entirely while every category is off; enabling one runs it on demand.
   if (Object.values(redactSettings).some(Boolean)) runAutoRedaction(id);
-  if (balanceToggle.checked) applyBalance(true);
   scheduleRender();
+}
+
+function reopenCapture(opened: OpenedCapture): Promise<void> {
+  return loadCapture({ id: opened.id, scale: opened.scale }, parseCaptureDocument(opened.document));
+}
+
+/** A capture deleted from the history while open leaves the editor empty. */
+function captureDeleted(id: string): void {
+  documentSaver.forget(id);
+  if (id !== captureId) return;
+  capture = null;
+  original = null;
+  captureId = null;
+  balanceCache = null;
+  detectedRegions = [];
+  detectedFor = null;
+  editor.reset();
+  canvas.hidden = true;
+  emptyState.hidden = false;
+  syncExportButtons();
 }
 
 function balanceOf(source: Capture): { result: BalanceResult; capture: Capture | null } {
@@ -152,6 +210,7 @@ function applyBalance(enabled: boolean): void {
   shift = offset;
   capture = target;
   scheduleRender();
+  scheduleDocumentSave();
 }
 
 /** Detected regions are kept in original coordinates; this places them on the current capture. */
@@ -248,6 +307,7 @@ function startCapture(): void {
 function styleChanged(): void {
   scheduleRender();
   saveSetting("style", toStoredStyle(style));
+  scheduleDocumentSave();
 }
 
 /** Restores the last session's choices before wiring the controls, so they start in sync. */
@@ -257,7 +317,7 @@ async function init(): Promise<void> {
   Object.assign(redactSettings, settings.redact);
   editor.setColor(settings.annotationColor);
 
-  const refreshControls = bindControls(sidebar, style, styleChanged);
+  refreshControls = bindControls(sidebar, style, styleChanged);
   bindPresets(sidebar.querySelector<HTMLElement>("#presets")!, settings.presets, {
     current: () => toStoredStyle(style),
     apply: (stored) => {
@@ -292,7 +352,18 @@ document.querySelectorAll<HTMLButtonElement>("[data-action=capture]").forEach((b
 copyButton.addEventListener("click", copy);
 saveButton.addEventListener("click", saveImage);
 
+const historyView = new HistoryView({
+  open: reopenCapture,
+  deleted: captureDeleted,
+  notify: showStatus,
+});
+historyButton.addEventListener("click", () => historyView.show());
+
 document.addEventListener("keydown", (event) => {
+  if (historyView.isOpen) {
+    if (event.key === "Escape") historyView.close();
+    return;
+  }
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
   const inForm = editingText || event.target instanceof HTMLSelectElement;
   if (capture && !inForm && editor.handleKey(event)) {
@@ -311,6 +382,7 @@ document.addEventListener("keydown", (event) => {
 
 if (!outsideTauri) {
   listen<CaptureReady>("capture-ready", (event) => {
+    historyView.close();
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
 }
