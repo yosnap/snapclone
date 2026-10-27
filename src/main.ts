@@ -16,13 +16,18 @@ import { bindControls } from "./controls";
 import { DocumentSaver } from "./document-saver";
 import { copyToClipboard, saveToFile } from "./export";
 import { HistoryView, type OpenedCapture, captureUrl } from "./history-view";
+import { highlightDrops, listenNotices, openClipboard, openFile } from "./open-image";
 import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
+import { bindReopen, reopenLast } from "./reopen-last";
 import { loadSettings, saveSetting } from "./settings";
 import { SettingsView } from "./settings-view";
 import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
+import { TextView } from "./text-view";
+import { isEditableTarget } from "./ui-helpers";
+import { requestWallpaper, wallpaperError } from "./wallpaper";
 
 type CaptureReady = { id: string; scale: number };
 
@@ -37,6 +42,7 @@ const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
 const balanceToggle = document.querySelector<HTMLInputElement>("#balance-toggle")!;
 const historyButton = document.querySelector<HTMLButtonElement>("#history-button")!;
 const settingsButton = document.querySelector<HTMLButtonElement>("#settings-button")!;
+const textButton = document.querySelector<HTMLButtonElement>("#text-button")!;
 
 const style = defaultStyle();
 const redactSettings = defaultRedactSettings();
@@ -118,6 +124,18 @@ function scheduleRender(): void {
   });
 }
 
+/**
+ * Loads the desktop picture, or reloads it if it changed, when the style uses it. Asked for
+ * on opening a capture and on picking the swatch; the default gradient stands in until it
+ * arrives, or if macOS gives none.
+ */
+function requireWallpaper(): void {
+  if (style.background.kind !== "wallpaper") return;
+  requestWallpaper().then(scheduleRender, (error) =>
+    showStatus(`No se pudo usar el fondo de escritorio (${wallpaperError(error)}); se muestra el degradado por defecto`, true),
+  );
+}
+
 /** Opens a capture; `saved` restores the style and annotations it had in the history. */
 async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument | null = null): Promise<void> {
   const image = new Image();
@@ -149,6 +167,7 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
     editor.load(saved.annotations);
     editor.translate(shift.x - saved.shift.x, shift.y - saved.shift.y);
   }
+  requireWallpaper();
   // Skip Vision entirely while every category is off; enabling one runs it on demand.
   if (Object.values(redactSettings).some(Boolean)) runAutoRedaction(id);
   scheduleRender();
@@ -234,6 +253,7 @@ function syncExportButtons(): void {
   const blocked = !capture || detectingFor === captureId;
   copyButton.disabled = blocked;
   saveButton.disabled = blocked;
+  textButton.disabled = !capture;
 }
 
 function regionsOf(category: RedactCategory): PixelateAnnotation[] {
@@ -291,6 +311,15 @@ async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string 
   }
   exporting = true;
   try {
+    // Never export the stand-in gradient: wait for the picture, or say why there is none.
+    if (style.background.kind === "wallpaper") {
+      try {
+        await requestWallpaper();
+      } catch (error) {
+        showStatus(`No se ha exportado: el fondo de escritorio no está disponible (${wallpaperError(error)})`, true);
+        return;
+      }
+    }
     render(canvas, capture, style, editor.overlay(false));
     const message = await action(canvas);
     if (message) showStatus(message);
@@ -333,13 +362,14 @@ async function init(): Promise<void> {
   Object.assign(redactSettings, settings.redact);
   editor.setColor(settings.annotationColor);
 
-  refreshControls = bindControls(sidebar, style, styleChanged);
+  refreshControls = bindControls(sidebar, style, styleChanged, requireWallpaper);
   bindPresets(sidebar.querySelector<HTMLElement>("#presets")!, settings.presets, {
     current: () => toStoredStyle(style),
     apply: (stored) => {
       applyStoredStyle(style, stored);
       refreshControls();
       styleChanged();
+      requireWallpaper();
     },
     persist: (presets) => saveSetting("presets", presets),
     notify: (message) => showStatus(message),
@@ -367,6 +397,8 @@ document.querySelectorAll<HTMLButtonElement>("[data-action=capture]").forEach((b
   button.addEventListener("click", startCapture);
 });
 copyButton.addEventListener("click", copy);
+// ⌘O reaches Rust through the File menu, which works with the editor hidden too.
+document.querySelector<HTMLButtonElement>("#open-button")!.addEventListener("click", () => openFile(showStatus));
 saveButton.addEventListener("click", saveImage);
 
 const historyView = new HistoryView({
@@ -375,6 +407,11 @@ const historyView = new HistoryView({
   notify: showStatus,
 });
 historyButton.addEventListener("click", () => historyView.show());
+
+const textView = new TextView();
+textButton.addEventListener("click", () => {
+  if (captureId) void textView.show(captureId);
+});
 
 /** The empty editor names the zone shortcut as it is configured right now. */
 function showZoneShortcut(entries: ShortcutEntry[]): void {
@@ -397,13 +434,24 @@ function openSettings(): void {
 settingsButton.addEventListener("click", openSettings);
 
 document.addEventListener("keydown", (event) => {
-  if (historyView.isOpen) {
-    if (event.key === "Escape") historyView.close();
+  if (historyView.isOpen || textView.isOpen) {
+    if (event.key === "Escape") {
+      historyView.close();
+      textView.close();
+    }
     return;
   }
   if (settingsView.isOpen) return;
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
   const inForm = editingText || event.target instanceof HTMLSelectElement;
+  // ⇧⌘Z: native redo in a field, the editor's redo with a capture, otherwise reopen the last one.
+  if (event.metaKey && event.shiftKey && !event.altKey && !event.ctrlKey && event.key.toLowerCase() === "z") {
+    if (isEditableTarget(event.target)) return;
+    event.preventDefault();
+    if (capture) editor.handleKey(event);
+    else if (!outsideTauri) reopenLast(showStatus);
+    return;
+  }
   if (capture && !inForm && editor.handleKey(event)) {
     event.preventDefault();
     return;
@@ -415,6 +463,9 @@ document.addEventListener("keydown", (event) => {
   } else if (event.key === "s") {
     event.preventDefault();
     saveImage();
+  } else if (event.key === "v" && !isEditableTarget(event.target) && !outsideTauri) {
+    event.preventDefault();
+    openClipboard(showStatus);
   }
 });
 
@@ -424,9 +475,18 @@ if (!outsideTauri) {
     .catch((error) => console.error("shortcuts could not be read", error));
   listen<CaptureReady>("capture-ready", (event) => {
     historyView.close();
+    textView.close();
     settingsView.close();
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
+  listenNotices(showStatus);
+  bindReopen((id) => {
+    historyView.close();
+    textView.close();
+    settingsView.close();
+    return reopenCapture(id);
+  }, showStatus);
+  highlightDrops(document.querySelector<HTMLElement>(".canvas-area")!);
   // "Ajustes…" in the app menu (⌘,) and in the menu bar icon.
   listen("open-settings", openSettings);
   listen<string>("capture-failed", (event) => {

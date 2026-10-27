@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{http, AppHandle, Emitter, Manager};
 use xcap::image::RgbaImage;
 
-use crate::{editor_window, history, images, screen, selector};
+use crate::{editor_window, history, images, screen, selector, wallpaper};
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
 const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
@@ -21,6 +21,9 @@ const READY_EVENT: &str = "capture-ready";
 const FAILED_EVENT: &str = "capture-failed";
 /// `capture://localhost/thumbnail/<id>` serves the small preview of a capture.
 const THUMBNAIL_PREFIX: &str = "thumbnail/";
+/// Sent with every `capture://localhost/wallpaper…` response, so the editor can tell when
+/// the desktop picture changed. Capture ids are UUIDs, so they never clash with those paths.
+const WALLPAPER_VERSION_HEADER: &str = "X-Wallpaper-Version";
 
 /// Captured files by id, served to the editor through the `capture://` scheme.
 #[derive(Default)]
@@ -165,12 +168,15 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
     // ordered out, which does not activate the app either. Every capture kind keeps this:
     // the selector shoots the monitors before opening its overlays (which the scroll capture
     // also starts from), and the full-screen capture shows the editor only after the shot.
-    if let Some(window) = app.get_webview_window(EDITOR_WINDOW)
-        && window.is_visible().unwrap_or(false)
-    {
-        let _ = window.hide();
+    let was_visible = editor_window::is_visible(&app);
+    // Ordered out even when it reports itself invisible: after ⌘H it still belongs on screen,
+    // and unhiding the app below would bring it back into the shot.
+    editor_window::hide(&app);
+    if was_visible {
         tokio::time::sleep(HIDE_SETTLE).await;
     }
+    // Every kind opens its overlays (or shows the editor) in a hidden app otherwise.
+    editor_window::unhide_without_activation(&app);
 
     // The own selector keeps `in_progress` set until the selection ends; see `selection_ended`.
     let own = tauri::async_runtime::spawn_blocking({
@@ -298,7 +304,7 @@ async fn run_screencapture(dir: &Path, args: &[&str]) -> Result<Option<(String, 
 
 /// Reads the display scale from the PNG `pHYs` chunk: screencapture stores 144 DPI for
 /// Retina captures and omits the chunk at 1x, which falls back to 1.
-fn png_scale(png: &[u8]) -> f64 {
+pub fn png_scale(png: &[u8]) -> f64 {
     const POINTS_PER_INCH: f64 = 72.0;
     const METERS_PER_INCH: f64 = 0.0254;
     let mut offset = 8;
@@ -322,16 +328,32 @@ fn png_scale(png: &[u8]) -> f64 {
 }
 
 /// Serves `capture://localhost/<id>` with CORS so the editor canvas stays exportable.
+/// Failures carry a plain-text reason the editor can show.
 pub fn serve(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
     let requested = request.uri().path().trim_start_matches('/');
-    let path = match requested.strip_prefix(THUMBNAIL_PREFIX) {
-        Some(id) => path_of(app, id).map(|path| thumbnail_or_capture(&path)),
-        None => path_of(app, requested),
+    let served = match wallpaper::Variant::from_path(requested) {
+        Some(variant) => wallpaper::serve(app, variant).map(|(bytes, kind, version)| (bytes, kind, Some(version))),
+        None => {
+            let path = match requested.strip_prefix(THUMBNAIL_PREFIX) {
+                Some(id) => path_of(app, id).map(|path| thumbnail_or_capture(&path)),
+                None => path_of(app, requested),
+            };
+            path.and_then(|path| std::fs::read(path).ok())
+                .map(|bytes| (bytes, "image/png", None))
+                .ok_or_else(|| "unknown capture".to_string())
+        }
     };
-    let response = http::Response::builder().header("Access-Control-Allow-Origin", "*");
-    match path.and_then(|path| std::fs::read(path).ok()) {
-        Some(bytes) => response.header("Content-Type", "image/png").body(bytes),
-        None => response.status(404).body(Vec::new()),
+    let response = http::Response::builder()
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Expose-Headers", WALLPAPER_VERSION_HEADER);
+    match served {
+        Ok((bytes, kind, version)) => match version {
+            Some(version) => response.header(WALLPAPER_VERSION_HEADER, version),
+            None => response,
+        }
+        .header("Content-Type", kind)
+        .body(bytes),
+        Err(reason) => response.status(404).header("Content-Type", "text/plain; charset=utf-8").body(reason.into_bytes()),
     }
     .expect("static response parts are valid")
 }

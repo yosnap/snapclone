@@ -1,4 +1,4 @@
-//! Automatic redaction: Vision reads the capture's text and regexes choose what to hide.
+//! Automatic redaction: Vision reads the capture's text (see `ocr`) and regexes choose what to hide.
 //! Patterns start from the ones Xnapper ships, tightened where they misfire on ordinary
 //! text (times read as IPv6, any digit run read as a card number).
 
@@ -8,7 +8,7 @@ use regex::Regex;
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::capture;
+use crate::ocr::{self, NormalizedRect};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -20,13 +20,19 @@ pub enum Category {
 }
 
 /// Normalized (0..1) box with the origin at the capture's top-left corner.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SensitiveRegion {
     category: Category,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
+}
+
+impl SensitiveRegion {
+    pub fn new(category: Category, rect: NormalizedRect) -> Self {
+        Self { category, x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+    }
 }
 
 /// Regexes whose capture group `group` is the sensitive text; group 0 is the whole match.
@@ -131,94 +137,10 @@ fn is_key_like(candidate: &str) -> bool {
 }
 
 /// Returns every sensitive region in the capture; the editor filters by enabled category.
+/// Vision runs in `ocr`, whose cached pass also serves "Texto detectado".
 #[tauri::command]
 pub async fn detect_sensitive(app: AppHandle, id: String) -> Result<Vec<SensitiveRegion>, String> {
-    let path = capture::path_of(&app, &id).ok_or("unknown capture")?;
-    tauri::async_runtime::spawn_blocking(move || vision::detect(&path))
-        .await
-        .map_err(|error| error.to_string())?
-}
-
-#[cfg(target_os = "macos")]
-mod vision {
-    use std::path::Path;
-
-    use objc2::{AnyThread, msg_send, rc::Retained};
-    use objc2_foundation::{NSArray, NSDictionary, NSError, NSRange, NSString, NSURL};
-    use objc2_vision::{
-        VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText, VNRectangleObservation, VNRequest,
-        VNRequestTextRecognitionLevel,
-    };
-
-    use super::{Category, SensitiveRegion, find_sensitive};
-
-    pub fn detect(path: &Path) -> Result<Vec<SensitiveRegion>, String> {
-        // Runs on a worker thread, so drain autoreleased Vision objects here.
-        objc2::rc::autoreleasepool(|_| detect_in_pool(path))
-    }
-
-    fn detect_in_pool(path: &Path) -> Result<Vec<SensitiveRegion>, String> {
-        let path = path.to_str().ok_or("capture path is not UTF-8")?;
-        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-        // SAFETY: an empty options dictionary is valid for every VNImageOption key type.
-        let handler = unsafe {
-            VNImageRequestHandler::initWithURL_options(VNImageRequestHandler::alloc(), &url, &NSDictionary::new())
-        };
-
-        let request = VNRecognizeTextRequest::new();
-        request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
-        // Correction "fixes" keys and addresses into dictionary words, which breaks matching.
-        request.setUsesLanguageCorrection(false);
-        let as_request: &VNRequest = &request;
-        handler
-            .performRequests_error(&NSArray::from_slice(&[as_request]))
-            .map_err(|error| error.localizedDescription().to_string())?;
-
-        let mut regions = Vec::new();
-        let Some(observations) = request.results() else {
-            return Ok(regions);
-        };
-        for observation in observations.iter() {
-            let Some(text) = observation.topCandidates(1).firstObject() else {
-                continue;
-            };
-            let line = text.string().to_string();
-            for (category, range) in find_sensitive(&line) {
-                regions.extend(bounding_box(&text, &line, range, category));
-            }
-        }
-        Ok(regions)
-    }
-
-    /// Vision addresses characters in UTF-16 units and uses a bottom-left origin.
-    fn bounding_box(
-        text: &VNRecognizedText,
-        line: &str,
-        bytes: std::ops::Range<usize>,
-        category: Category,
-    ) -> Option<SensitiveRegion> {
-        let start = line[..bytes.start].encode_utf16().count();
-        let length = line[bytes].encode_utf16().count();
-        // SAFETY: the range lies within the candidate string it was computed from.
-        let observation: Result<Retained<VNRectangleObservation>, Retained<NSError>> =
-            unsafe { msg_send![text, boundingBoxForRange: NSRange::new(start, length), error: _] };
-        // SAFETY: reading a plain CGRect property.
-        let rect = unsafe { observation.ok()?.boundingBox() };
-        Some(SensitiveRegion {
-            category,
-            x: rect.origin.x,
-            y: 1.0 - rect.origin.y - rect.size.height,
-            width: rect.size.width,
-            height: rect.size.height,
-        })
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod vision {
-    pub fn detect(_path: &std::path::Path) -> Result<Vec<super::SensitiveRegion>, String> {
-        Err("text recognition is only implemented on macOS".into())
-    }
+    Ok(ocr::analyze(&app, &id).await?.sensitive.clone())
 }
 
 #[cfg(test)]
@@ -282,9 +204,9 @@ mod tests {
     #[ignore = "needs a sample image in REDACT_SAMPLE"]
     fn vision_finds_regions_in_sample_image() {
         let path = std::env::var("REDACT_SAMPLE").expect("REDACT_SAMPLE points to an image");
-        let regions = super::vision::detect(std::path::Path::new(&path)).expect("vision runs");
-        println!("{regions:#?}");
-        assert!(!regions.is_empty());
+        let analysis = crate::ocr::recognize_sample(std::path::Path::new(&path));
+        println!("{:#?}\n{:#?}", analysis.lines, analysis.sensitive);
+        assert!(!analysis.sensitive.is_empty());
     }
 
     #[test]

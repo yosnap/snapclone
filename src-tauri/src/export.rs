@@ -76,6 +76,28 @@ fn write_png_to_pasteboard(bytes: &[u8]) -> Result<(), String> {
     }
 }
 
+/// Replaces the pasteboard contents with plain text. Call it on the main thread.
+#[cfg(target_os = "macos")]
+pub fn write_text_to_pasteboard(text: &str) -> Result<(), String> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    use objc2_foundation::NSString;
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard.clearContents();
+    // SAFETY: AppKit defines this constant for the lifetime of the process.
+    let string_type = unsafe { NSPasteboardTypeString };
+    if pasteboard.setString_forType(&NSString::from_str(text), string_type) {
+        Ok(())
+    } else {
+        Err("the pasteboard rejected the text".into())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn write_text_to_pasteboard(_text: &str) -> Result<(), String> {
+    Err("copying text is only implemented on macOS".into())
+}
+
 #[cfg(not(target_os = "macos"))]
 fn write_png_to_pasteboard(_bytes: &[u8]) -> Result<(), String> {
     Err("copying images is only implemented on macOS".into())

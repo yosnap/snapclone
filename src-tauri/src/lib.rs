@@ -6,6 +6,10 @@ mod export;
 mod geometry;
 mod history;
 mod images;
+mod ocr;
+mod import;
+#[cfg(target_os = "macos")]
+mod image_io;
 mod prefs;
 mod redact;
 mod screen;
@@ -14,8 +18,9 @@ mod selector;
 mod shortcuts;
 mod stitch;
 mod tray;
+mod wallpaper;
 
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{DragDropEvent, Manager, RunEvent, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,6 +32,8 @@ pub fn run() {
         .manage(selector::Selection::default())
         .manage(shortcuts::Shortcuts::default())
         .manage(scroll::ScrollCapture::default())
+        .manage(ocr::OcrCache::default())
+        .manage(wallpaper::WallpaperCache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -48,10 +55,14 @@ pub fn run() {
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } if window.label() == capture::EDITOR_WINDOW => {
                 api.prevent_close();
-                let _ = window.hide();
+                editor_window::hide(window.app_handle());
             }
             // A shortcut recorder left open never keeps the global shortcuts paused.
             WindowEvent::Focused(false) if window.label() == capture::EDITOR_WINDOW => shortcuts::resume(window.app_handle()),
+            // The paths of files dropped on the editor come from the system, never the page.
+            WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) if window.label() == capture::EDITOR_WINDOW => {
+                import::open_dropped(window.app_handle(), paths);
+            }
             WindowEvent::Destroyed => {
                 selector::on_window_destroyed(window.app_handle(), window.label());
                 scroll::on_window_destroyed(window.app_handle(), window.label());
@@ -79,7 +90,12 @@ pub fn run() {
             shortcuts::set_shortcut,
             shortcuts::pause_shortcuts,
             scroll::finish_scroll,
-            scroll::cancel_scroll
+            scroll::cancel_scroll,
+            import::open_clipboard_image,
+            import::open_image_file,
+            editor_window::reopen_last_capture,
+            ocr::recognize_text,
+            ocr::copy_capture_text
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));
@@ -87,19 +103,21 @@ pub fn run() {
             app.set_activation_policy(editor_window::activation_policy(editor_window::dock_hidden(app.handle())));
             let registered = shortcuts::init(app.handle());
             tray::build(app.handle(), &registered)?;
-            // ⌘, still works from the editor's button and the menu bar icon without it.
-            if let Err(error) = tray::add_settings_to_app_menu(app.handle()) {
-                eprintln!("settings could not be added to the app menu: {error}");
+            // Without it, the editor's buttons and the menu bar icon still offer every action.
+            if let Err(error) = tray::extend_app_menu(app.handle()) {
+                eprintln!("the app menu could not be extended: {error}");
             }
             editor_window::show(app.handle(), true);
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
+        .run(|app, event| match event {
             // A click on the Dock icon, or opening the app again while it runs.
-            if let RunEvent::Reopen { .. } = event {
-                editor_window::show(app, false);
-            }
+            RunEvent::Reopen { .. } => editor_window::show(app, false),
+            // Without a code, the last window closing asked to exit; the app lives on in the
+            // menu bar. "Salir del todo" exits with a code, which is let through.
+            RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
+            _ => {}
         });
 }

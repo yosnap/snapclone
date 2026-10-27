@@ -3,7 +3,9 @@ export type GradientStop = { offset: number; color: string };
 export type Background =
   | { kind: "gradient"; angle: number; stops: GradientStop[] }
   | { kind: "solid"; color: string }
-  | { kind: "image"; image: HTMLImageElement };
+  | { kind: "image"; image: HTMLImageElement }
+  /** The desktop picture, blurred; `image` is filled in once it has loaded (see wallpaper.ts). */
+  | { kind: "wallpaper"; image: HTMLImageElement | null };
 
 /** All lengths are in points; the renderer multiplies them by the capture scale. */
 export type Style = {
@@ -31,6 +33,14 @@ export const GRADIENT_PRESETS: Extract<Background, { kind: "gradient" }>[] = [
   gradient(90, ["#F15F79", "#B24592"]),
   gradient(90, ["#8E54E9", "#4776E6"]),
 ];
+
+/** Served by Rust from the main display's desktop picture; the page never names a file. */
+export const WALLPAPER_URL = "capture://localhost/wallpaper";
+/** A small copy for the swatch, so the grid never loads the full picture. */
+const WALLPAPER_THUMBNAIL_URL = `${WALLPAPER_URL}/thumbnail`;
+
+/** The single wallpaper background, so it is recognised by identity like the gradient presets. */
+export const WALLPAPER_BACKGROUND: Extract<Background, { kind: "wallpaper" }> = { kind: "wallpaper", image: null };
 
 function gradient(angle: number, colors: string[]): Extract<Background, { kind: "gradient" }> {
   const last = Math.max(1, colors.length - 1);
@@ -68,5 +78,7 @@ export function backgroundPreviewCss(background: Background): string {
       return background.color;
     case "image":
       return `center / cover url("${background.image.src}")`;
+    case "wallpaper":
+      return `center / cover url("${WALLPAPER_THUMBNAIL_URL}")`;
   }
 }

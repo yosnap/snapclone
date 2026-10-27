@@ -1,13 +1,25 @@
-import { type Background, type Ratio, type Style, GRADIENT_PRESETS, RATIOS, defaultStyle } from "./style";
+import {
+  type Background,
+  type Ratio,
+  type Style,
+  GRADIENT_PRESETS,
+  RATIOS,
+  WALLPAPER_BACKGROUND,
+  defaultStyle,
+} from "./style";
 
 /**
  * Serializable form of `Style`, shared by the settings, the presets and the history.
  * Gradients are stored by preset index and solid colours by value. A background image
  * picked with `<input type=file>` only lives as a blob URL in this session (the file input
  * exposes no path on disk), so it is not persisted: a style saved while one was selected
- * comes back with the default gradient.
+ * comes back with the default gradient. The desktop picture is read again from macOS, so it
+ * is stored by kind alone and survives a restart.
  */
-export type StoredBackground = { kind: "gradient"; index: number } | { kind: "solid"; color: string };
+export type StoredBackground =
+  | { kind: "gradient"; index: number }
+  | { kind: "solid"; color: string }
+  | { kind: "wallpaper" };
 export type StoredStyle = Omit<Style, "background"> & { background: StoredBackground };
 
 /** Same ranges as the sidebar sliders, so stored values always fit the controls. */
@@ -26,6 +38,7 @@ export function toStoredStyle(style: Style): StoredStyle {
 
 function toStoredBackground(background: Background): StoredBackground {
   if (background.kind === "solid") return { kind: "solid", color: background.color };
+  if (background.kind === "wallpaper") return { kind: "wallpaper" };
   const index = background.kind === "gradient" ? GRADIENT_PRESETS.indexOf(background) : -1;
   return index >= 0 ? { kind: "gradient", index } : toStoredBackground(defaultStyle().background);
 }
@@ -34,8 +47,16 @@ function toStoredBackground(background: Background): StoredBackground {
 export function applyStoredStyle(style: Style, stored: StoredStyle): void {
   const { background, ...rest } = stored;
   Object.assign(style, rest);
-  style.background =
-    background.kind === "solid" ? { kind: "solid", color: background.color } : GRADIENT_PRESETS[background.index];
+  switch (background.kind) {
+    case "solid":
+      style.background = { kind: "solid", color: background.color };
+      break;
+    case "wallpaper":
+      style.background = WALLPAPER_BACKGROUND;
+      break;
+    case "gradient":
+      style.background = GRADIENT_PRESETS[background.index];
+  }
 }
 
 /**
@@ -58,6 +79,7 @@ export function parseStoredStyle(value: unknown): StoredStyle | null {
 function parseBackground(value: unknown): StoredBackground | null {
   if (!isRecord(value)) return null;
   if (value.kind === "solid" && isHexColor(value.color)) return { kind: "solid", color: value.color };
+  if (value.kind === "wallpaper") return { kind: "wallpaper" };
   if (value.kind === "gradient" && Number.isInteger(value.index)) {
     const index = value.index as number;
     if (index >= 0 && index < GRADIENT_PRESETS.length) return { kind: "gradient", index };

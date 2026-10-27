@@ -1,16 +1,25 @@
 //! The editor window and the Dock icon. The window starts hidden and is shown centred on the
 //! main display, so it never opens behind other apps or on a monitor that is gone.
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 use crate::{
     capture::EDITOR_WINDOW,
     geometry::{self, Rect},
-    prefs,
+    history, prefs,
 };
 
 const DOCK_HIDDEN_KEY: &str = "hideDockIcon";
 const SETTINGS_EVENT: &str = "open-settings";
+const NOTICE_EVENT: &str = "editor-notice";
+const REOPEN_EVENT: &str = "reopen-capture";
+
+#[derive(Clone, Serialize)]
+struct Notice<'a> {
+    message: &'a str,
+    error: bool,
+}
 
 /// Shows, raises and focuses the editor. At launch, or when it would sit off every monitor,
 /// it is first centred on the main display.
@@ -26,11 +35,97 @@ pub fn show(app: &AppHandle, recenter: bool) {
     let _ = window.set_focus();
 }
 
+/// Hides the editor; the app keeps running in the menu bar and the Dock.
+pub fn hide(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
+        let _ = window.hide();
+    }
+}
+
+/// Whether the editor is on screen. A hidden app (⌘H or "Ocultar Snapclone") counts as not.
+pub fn is_visible(app: &AppHandle) -> bool {
+    app.get_webview_window(EDITOR_WINDOW).is_some_and(|window| window.is_visible().unwrap_or(false))
+}
+
+/// After "Ocultar Snapclone" the whole app is hidden, and so would be every overlay a
+/// capture opens. This unhides it without activating it, which keeps the capture invariant
+/// (nothing activates Snapclone before the shot); queued on the main thread after any hide
+/// requested before it, so a hidden editor stays out of the shot.
+pub fn unhide_without_activation(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = app.run_on_main_thread(|| {
+        if let Some(main_thread) = objc2::MainThreadMarker::new() {
+            objc2_app_kit::NSApplication::sharedApplication(main_thread).unhideWithoutActivation();
+        }
+    }) {
+        eprintln!("the app could not be unhidden: {error}");
+    }
+}
+
+/// "Ocultar Snapclone" (⌘Q): closes every window and gives the focus back to the previous
+/// app. The process keeps running in the menu bar with its global shortcuts; the Dock icon,
+/// the menu bar or a capture bring the editor back.
+pub fn hide_app(app: &AppHandle) {
+    for (label, window) in app.webview_windows() {
+        // Selector and scroll windows clean up their session when they close.
+        if label != EDITOR_WINDOW
+            && let Err(error) = window.close()
+        {
+            eprintln!("window {label} could not be closed: {error}");
+        }
+    }
+    hide(app);
+    #[cfg(target_os = "macos")]
+    if let Err(error) = app.hide() {
+        eprintln!("the app could not be hidden: {error}");
+    }
+}
+
+/// Opens the newest capture of the history with its document, in the editor.
+pub fn reopen_last(app: &AppHandle) {
+    match history::latest_id(app) {
+        Ok(Some(id)) => {
+            show(app, false);
+            if let Err(error) = app.emit_to(EDITOR_WINDOW, REOPEN_EVENT, id) {
+                eprintln!("reopen-capture emit failed: {error}");
+            }
+        }
+        Ok(None) => notify(app, "Todavía no hay ninguna captura que reabrir", false),
+        Err(error) => notify(app, &format!("No se pudo leer el historial: {error}"), true),
+    }
+}
+
+#[tauri::command]
+pub fn reopen_last_capture(app: AppHandle) {
+    reopen_last(&app);
+}
+
 /// Brings the editor forward with its settings open.
 pub fn show_settings(app: &AppHandle) {
     show(app, false);
     if let Err(error) = app.emit_to(EDITOR_WINDOW, SETTINGS_EVENT, ()) {
         eprintln!("open-settings emit failed: {error}");
+    }
+}
+
+/// Brings the editor forward with a message in its status line, so the outcome of an action
+/// started from the menu bar is never lost behind a hidden window.
+pub fn notify(app: &AppHandle, message: &str, error: bool) {
+    if error {
+        eprintln!("{message}");
+    }
+    show(app, false);
+    emit_notice(app, message, error);
+}
+
+/// Puts a message in the editor's status line without bringing it forward.
+pub fn status(app: &AppHandle, message: &str) {
+    emit_notice(app, message, false);
+}
+
+fn emit_notice(app: &AppHandle, message: &str, error: bool) {
+    if let Err(emit_error) = app.emit_to(EDITOR_WINDOW, NOTICE_EVENT, Notice { message, error }) {
+        eprintln!("editor-notice emit failed: {emit_error}");
     }
 }
 
