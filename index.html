@@ -11,11 +11,28 @@
   <body>
     <main class="editor">
       <section class="stage">
-        <div id="empty-state" class="empty-state">
-          <p>Pulsa <kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd> o usa el icono de la barra de menús.</p>
-          <button type="button" data-action="capture">Capturar región</button>
+        <div id="toolbar" class="toolbar" role="toolbar" aria-label="Anotaciones">
+          <div class="tool-group">
+            <button type="button" class="tool" data-tool="select" title="Seleccionar y mover (V)">↖ Mover</button>
+            <button type="button" class="tool" data-tool="arrow" title="Flecha (A)">↗ Flecha</button>
+            <button type="button" class="tool" data-tool="rect" title="Rectángulo (R)">▭ Rectángulo</button>
+            <button type="button" class="tool" data-tool="text" title="Texto (T)">T Texto</button>
+            <button type="button" class="tool" data-tool="pixelate" title="Pixelar (P)">▦ Pixelar</button>
+          </div>
+          <div id="annotation-colors" class="tool-group" aria-label="Color"></div>
+          <div class="tool-group">
+            <button type="button" class="tool" data-history="undo" title="Deshacer (⌘Z)">↶</button>
+            <button type="button" class="tool" data-history="redo" title="Rehacer (⇧⌘Z)">↷</button>
+          </div>
         </div>
-        <canvas id="editor-canvas" hidden></canvas>
+        <div class="canvas-area">
+          <div id="empty-state" class="empty-state">
+            <p>Pulsa <kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd> o usa el icono de la barra de menús.</p>
+            <button type="button" data-action="capture">Capturar región</button>
+          </div>
+          <canvas id="editor-canvas" hidden></canvas>
+        </div>
+        <input id="text-entry" class="text-entry" type="text" hidden aria-label="Texto de la anotación" />
       </section>
 
       <aside id="sidebar" class="sidebar">

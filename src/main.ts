@@ -1,8 +1,10 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { AnnotationEditor, type Tool } from "./annotation-editor";
+import { ANNOTATION_COLORS } from "./annotations";
 import { bindControls } from "./controls";
 import { copyToClipboard, saveToFile } from "./export";
-import { type Capture, render } from "./render";
+import { type Capture, layout, render } from "./render";
 import { defaultStyle } from "./style";
 
 type CaptureReady = { id: string; scale: number };
@@ -13,18 +15,30 @@ const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const status = document.querySelector<HTMLElement>("#status")!;
 const copyButton = document.querySelector<HTMLButtonElement>("#copy-button")!;
 const saveButton = document.querySelector<HTMLButtonElement>("#save-button")!;
+const toolbar = document.querySelector<HTMLElement>("#toolbar")!;
+const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
 
 const style = defaultStyle();
 let capture: Capture | null = null;
 let renderQueued = false;
 let exporting = false;
 
+const editor = new AnnotationEditor(
+  canvas,
+  textEntry,
+  () => (capture ? { layout: layout(capture, style), scale: capture.scale } : null),
+  () => {
+    syncToolbar();
+    scheduleRender();
+  },
+);
+
 function scheduleRender(): void {
   if (!capture || renderQueued) return;
   renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
-    if (capture) render(canvas, capture, style);
+    if (capture) render(canvas, capture, style, editor.overlay(true));
   });
 }
 
@@ -40,6 +54,7 @@ async function loadCapture({ id, scale }: CaptureReady): Promise<void> {
   await image.decode();
 
   capture = { image, scale };
+  editor.reset();
   emptyState.hidden = true;
   canvas.hidden = false;
   copyButton.disabled = false;
@@ -58,13 +73,14 @@ async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string 
   if (!capture || exporting) return;
   exporting = true;
   try {
-    render(canvas, capture, style);
+    render(canvas, capture, style, editor.overlay(false));
     const message = await action(canvas);
     if (message) showStatus(message);
   } catch (error) {
     showStatus(`${failure}: ${error}`, true);
   } finally {
     exporting = false;
+    scheduleRender();
   }
 }
 
@@ -83,6 +99,7 @@ function startCapture(): void {
 }
 
 bindControls(sidebar, style, scheduleRender);
+buildToolbar();
 
 // The Vite dev server is reachable from any browser, but only the Tauri window has the Rust bridge.
 const outsideTauri = !isTauri();
@@ -98,8 +115,13 @@ copyButton.addEventListener("click", copy);
 saveButton.addEventListener("click", saveImage);
 
 document.addEventListener("keydown", (event) => {
-  if (!event.metaKey || event.shiftKey || event.altKey || event.repeat) return;
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
+  const inForm = editingText || event.target instanceof HTMLSelectElement;
+  if (capture && !inForm && editor.handleKey(event)) {
+    event.preventDefault();
+    return;
+  }
+  if (!event.metaKey || event.shiftKey || event.altKey || event.repeat) return;
   if (event.key === "c" && !editingText) {
     event.preventDefault();
     copy();
@@ -112,5 +134,37 @@ document.addEventListener("keydown", (event) => {
 if (!outsideTauri) {
   listen<CaptureReady>("capture-ready", (event) => {
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
+  });
+}
+
+function buildToolbar(): void {
+  const colors = toolbar.querySelector<HTMLElement>("#annotation-colors")!;
+  for (const color of ANNOTATION_COLORS) {
+    const swatch = document.createElement("button");
+    swatch.type = "button";
+    swatch.className = "color-swatch";
+    swatch.dataset.color = color;
+    swatch.title = color;
+    swatch.style.background = color;
+    colors.append(swatch);
+  }
+  toolbar.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
+    if (!button) return;
+    if (button.dataset.tool) editor.setTool(button.dataset.tool as Tool);
+    else if (button.dataset.color) editor.setColor(button.dataset.color);
+    else if (button.dataset.history === "undo") editor.undo();
+    else if (button.dataset.history === "redo") editor.redo();
+    syncToolbar();
+  });
+  editor.setTool("select");
+}
+
+function syncToolbar(): void {
+  toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.tool === editor.tool));
+  });
+  toolbar.querySelectorAll<HTMLButtonElement>("[data-color]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.color === editor.color));
   });
 }
