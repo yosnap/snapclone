@@ -1,12 +1,12 @@
 use tauri::{
-    menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem},
+    menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     AppHandle, Manager, Wry,
 };
 
 use crate::{
     capture::{self, CaptureKind},
-    editor_window, import,
+    editor_window, import, ocr,
     shortcuts::ShortcutEntry,
 };
 
@@ -16,6 +16,7 @@ const CAPTURE_PREFIX: &str = "capture-";
 const CLIPBOARD_ID: &str = "open-clipboard";
 const OPEN_FILE_ID: &str = "open-file";
 const REOPEN_ID: &str = "reopen-last";
+const COPY_TEXT_ID: &str = "copy-last-text";
 /// The app menu's copy, whose ⇧⌘Z comes and goes; see `editor_window::sync_reopen_shortcut`.
 const REOPEN_SHORTCUT_ID: &str = "reopen-last-shortcut";
 const REOPEN_ACCELERATOR: &str = "Shift+Cmd+Z";
@@ -43,6 +44,8 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
     let file_item = MenuItem::with_id(app, OPEN_FILE_ID, "Abrir archivo…", true, None::<&str>)?;
     // The menu bar icon only shows the shortcut; it acts through the app menu.
     let reopen_item = MenuItem::with_id(app, REOPEN_ID, "Reabrir última captura", true, Some(REOPEN_ACCELERATOR))?;
+    let copy_text_item = MenuItem::with_id(app, COPY_TEXT_ID, "Copiar texto de la última captura", true, None::<&str>)?;
+    let text_menu = Submenu::with_items(app, "Texto detectado", true, &[&copy_text_item])?;
     let open_item = MenuItem::with_id(app, "open", "Abrir Snapclone", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, SETTINGS_ID, "Ajustes…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Salir", true, Some("Cmd+Q"))?;
@@ -52,7 +55,7 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
     for (_, item) in &captures {
         menu.append(item)?;
     }
-    menu.append_items(&[&separator, &clipboard_item, &file_item, &reopen_item, &separator, &open_item, &settings_item, &separator, &quit_item])?;
+    menu.append_items(&[&separator, &clipboard_item, &file_item, &reopen_item, &text_menu, &separator, &open_item, &settings_item, &separator, &quit_item])?;
     app.manage(CaptureItems(captures));
     show_shortcuts(app, shortcuts);
 
@@ -89,6 +92,7 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
         CLIPBOARD_ID => import::open_clipboard(app),
         OPEN_FILE_ID => import::open_file_dialog(app),
         REOPEN_ID => editor_window::reopen_last(app),
+        COPY_TEXT_ID => ocr::copy_latest_text(app),
         REOPEN_SHORTCUT_ID => editor_window::reopen_shortcut(app),
         "quit" => app.exit(0),
         _ => {}

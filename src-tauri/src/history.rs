@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::{capture, images};
+use crate::{capture, images, ocr};
 
 const DATABASE_FILE: &str = "history.sqlite3";
 /// Captures per page of the history view; older pages load on demand, so every capture
@@ -245,6 +245,7 @@ pub fn open_history(history: State<'_, History>, id: String) -> Result<OpenedCap
 pub fn delete_history(app: AppHandle, history: State<'_, History>, id: String) -> Result<(), String> {
     let path = delete(&history.connection(), &id).map_err(|error| error.to_string())?;
     capture::forget(&app, &id);
+    ocr::forget(&app, &id);
     let Some(path) = path else { return Ok(()) };
     for file in [images::thumbnail_path(&path), path] {
         match std::fs::remove_file(&file) {

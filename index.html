@@ -95,6 +95,7 @@
           <button id="save-button" type="button" class="secondary" disabled>Guardar <kbd>⌘S</kbd></button>
           <button type="button" class="secondary" data-action="capture">Nueva captura</button>
           <button type="button" id="open-button" class="secondary" title="Abrir una imagen PNG o JPEG (⌘O). También puedes arrastrarla aquí.">Abrir… <kbd>⌘O</kbd></button>
+          <button type="button" id="text-button" class="secondary" title="Ver y copiar el texto de la captura" disabled>Texto</button>
           <button type="button" id="history-button" class="secondary">Historial</button>
           <button type="button" id="settings-button" class="secondary" title="Ajustes (⌘,)">Ajustes</button>
         </div>
@@ -111,6 +112,21 @@
         <p id="history-empty" class="history-empty" hidden>Todavía no hay capturas guardadas.</p>
         <ul id="history-list" class="history-list"></ul>
         <button type="button" id="history-more" class="secondary history-more" hidden>Mostrar más</button>
+      </div>
+    </div>
+
+    <div id="text-view" class="history" role="dialog" aria-modal="true" aria-labelledby="text-title" hidden>
+      <div class="history-panel text-panel">
+        <header class="history-header">
+          <h2 id="text-title">Texto detectado</h2>
+          <div class="header-actions">
+            <button type="button" id="text-copy" class="compact" disabled>Copiar todo</button>
+            <button type="button" id="text-close" class="secondary compact">Cerrar</button>
+          </div>
+        </header>
+        <p id="text-empty" class="history-empty" hidden>No se ha encontrado texto en esta captura.</p>
+        <ol id="text-lines" class="text-lines"></ol>
+        <p id="text-status" class="status text-status" role="status"></p>
       </div>
     </div>
 

@@ -25,6 +25,7 @@ import { loadSettings, saveSetting } from "./settings";
 import { SettingsView } from "./settings-view";
 import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
+import { TextView } from "./text-view";
 import { ensureWallpaper } from "./wallpaper";
 
 type CaptureReady = { id: string; scale: number };
@@ -40,6 +41,7 @@ const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
 const balanceToggle = document.querySelector<HTMLInputElement>("#balance-toggle")!;
 const historyButton = document.querySelector<HTMLButtonElement>("#history-button")!;
 const settingsButton = document.querySelector<HTMLButtonElement>("#settings-button")!;
+const textButton = document.querySelector<HTMLButtonElement>("#text-button")!;
 
 const style = defaultStyle();
 const redactSettings = defaultRedactSettings();
@@ -246,6 +248,7 @@ function syncExportButtons(): void {
   const blocked = !capture || detectingFor === captureId;
   copyButton.disabled = blocked;
   saveButton.disabled = blocked;
+  textButton.disabled = !capture;
 }
 
 function regionsOf(category: RedactCategory): PixelateAnnotation[] {
@@ -390,6 +393,11 @@ const historyView = new HistoryView({
 });
 historyButton.addEventListener("click", () => historyView.show());
 
+const textView = new TextView();
+textButton.addEventListener("click", () => {
+  if (captureId) void textView.show(captureId);
+});
+
 /** The empty editor names the zone shortcut as it is configured right now. */
 function showZoneShortcut(entries: ShortcutEntry[]): void {
   const hint = document.querySelector<HTMLElement>("#empty-hint")!;
@@ -411,8 +419,11 @@ function openSettings(): void {
 settingsButton.addEventListener("click", openSettings);
 
 document.addEventListener("keydown", (event) => {
-  if (historyView.isOpen) {
-    if (event.key === "Escape") historyView.close();
+  if (historyView.isOpen || textView.isOpen) {
+    if (event.key === "Escape") {
+      historyView.close();
+      textView.close();
+    }
     return;
   }
   if (settingsView.isOpen) return;
@@ -441,6 +452,7 @@ if (!outsideTauri) {
     .catch((error) => console.error("shortcuts could not be read", error));
   listen<CaptureReady>("capture-ready", (event) => {
     historyView.close();
+    textView.close();
     settingsView.close();
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
@@ -449,6 +461,7 @@ if (!outsideTauri) {
   reportLoaded(false);
   bindReopen((id) => {
     historyView.close();
+    textView.close();
     settingsView.close();
     return reopenCapture(id);
   }, showStatus);

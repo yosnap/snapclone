@@ -6,6 +6,7 @@ mod export;
 mod geometry;
 mod history;
 mod images;
+mod ocr;
 mod import;
 mod prefs;
 mod redact;
@@ -30,6 +31,7 @@ pub fn run() {
         .manage(shortcuts::Shortcuts::default())
         .manage(scroll::ScrollCapture::default())
         .manage(editor_window::EditorContent::default())
+        .manage(ocr::OcrCache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -90,7 +92,9 @@ pub fn run() {
             import::open_clipboard_image,
             import::open_image_file,
             editor_window::set_editor_loaded,
-            editor_window::reopen_last_capture
+            editor_window::reopen_last_capture,
+            ocr::recognize_text,
+            export::copy_text
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));

@@ -112,6 +112,15 @@ pub fn notify(app: &AppHandle, message: &str, error: bool) {
         eprintln!("{message}");
     }
     show(app, false);
+    emit_notice(app, message, error);
+}
+
+/// Puts a message in the editor's status line without bringing it forward.
+pub fn status(app: &AppHandle, message: &str) {
+    emit_notice(app, message, false);
+}
+
+fn emit_notice(app: &AppHandle, message: &str, error: bool) {
     if let Err(emit_error) = app.emit_to(EDITOR_WINDOW, NOTICE_EVENT, Notice { message, error }) {
         eprintln!("editor-notice emit failed: {emit_error}");
     }
