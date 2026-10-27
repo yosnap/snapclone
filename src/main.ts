@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { bindControls } from "./controls";
 import { copyToClipboard, saveToFile } from "./export";
@@ -78,10 +78,18 @@ const saveImage = () =>
   exportWith(async (target) => ((await saveToFile(target)) ? "Imagen guardada" : null), "No se pudo guardar");
 
 function startCapture(): void {
+  if (outsideTauri) return;
   invoke("start_capture").catch((error) => showStatus(`No se pudo capturar: ${error}`, true));
 }
 
 bindControls(sidebar, style, scheduleRender);
+
+// The Vite dev server is reachable from any browser, but only the Tauri window has the Rust bridge.
+const outsideTauri = !isTauri();
+if (outsideTauri) {
+  document.querySelectorAll<HTMLButtonElement>("button").forEach((button) => (button.disabled = true));
+  showStatus("Esto es la vista web en un navegador. Usa la ventana de Snapclone que abre «npm run tauri dev».", true);
+}
 
 document.querySelectorAll<HTMLButtonElement>("[data-action=capture]").forEach((button) => {
   button.addEventListener("click", startCapture);
@@ -101,6 +109,8 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-listen<CaptureReady>("capture-ready", (event) => {
-  loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
-});
+if (!outsideTauri) {
+  listen<CaptureReady>("capture-ready", (event) => {
+    loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
+  });
+}
