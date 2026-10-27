@@ -1,13 +1,23 @@
-//! Images that were not captured here, starting with the pasteboard. Each one becomes a
-//! PNG in `captures/` and follows the normal capture flow (history, thumbnail,
-//! `capture-ready`). Paths only ever come from Rust or the system, never from the webview.
+//! Images that were not captured here: the pasteboard, a file picked in the open dialog or
+//! one dropped on the editor. Each one becomes a PNG in `captures/` and follows the normal
+//! capture flow (history, thumbnail, `capture-ready`). Paths only ever come from the dialog
+//! or the system's drop event, never from the webview.
 
-use std::io::Cursor;
+use std::{
+    io::Cursor,
+    path::{Path, PathBuf},
+};
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::DialogExt;
 use xcap::image::ImageReader;
 
 use crate::{capture, editor_window};
+
+const FILE_FORMATS: &[Format] = &[Format::Png, Format::Jpeg];
+const FILE_UNSUPPORTED: &str = "Solo se pueden abrir imágenes PNG o JPEG";
+/// Far above any screenshot; stops a mistaken drop from reading gigabytes into memory.
+const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// No display goes beyond 3x; a print-resolution `pHYs` must not blow up the styling.
 const MAX_SCALE: f64 = 3.0;
@@ -72,21 +82,75 @@ fn store(app: &AppHandle, png: &[u8], scale: f64) -> Result<(), String> {
     Ok(())
 }
 
-/// Converts and stores off the main thread; failures end up in the editor's status line.
-fn open_bytes(app: &AppHandle, bytes: Vec<u8>, accepted: &'static [Format], unsupported: &'static str) {
+/// Loads, converts and stores off the main thread; failures end up in the editor's status line.
+fn open_with(
+    app: &AppHandle,
+    load: impl FnOnce() -> Result<Vec<u8>, String> + Send + 'static,
+    accepted: &'static [Format],
+    unsupported: &'static str,
+) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = prepare(bytes, accepted, unsupported).and_then(|(png, scale)| store(&app, &png, scale)) {
+        let result = load()
+            .and_then(|bytes| prepare(bytes, accepted, unsupported))
+            .and_then(|(png, scale)| store(&app, &png, scale));
+        if let Err(error) = result {
             editor_window::notify(&app, &error, true);
         }
     });
+}
+
+fn read_file(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| format!("No se pudo abrir el archivo: {error}"))?;
+    if !metadata.is_file() {
+        return Err(FILE_UNSUPPORTED.into());
+    }
+    if metadata.len() > MAX_FILE_BYTES {
+        return Err("El archivo es demasiado grande para ser una captura".into());
+    }
+    std::fs::read(path).map_err(|error| format!("No se pudo leer el archivo: {error}"))
+}
+
+fn open_path(app: &AppHandle, path: PathBuf) {
+    open_with(app, move || read_file(&path), FILE_FORMATS, FILE_UNSUPPORTED);
+}
+
+/// Shows the system open dialog as a sheet of the editor, which is brought forward first so
+/// the dialog never opens behind other apps when started from the menu bar.
+pub fn open_file_dialog(app: &AppHandle) {
+    editor_window::show(app, false);
+    let mut dialog = app.dialog().file().set_title("Abrir imagen").add_filter("Imagen PNG o JPEG", &["png", "jpg", "jpeg"]);
+    if let Some(window) = app.get_webview_window(capture::EDITOR_WINDOW) {
+        dialog = dialog.set_parent(&window);
+    }
+    let app = app.clone();
+    dialog.pick_file(move |chosen| {
+        let Some(chosen) = chosen else { return };
+        match chosen.into_path() {
+            Ok(path) => open_path(&app, path),
+            Err(error) => editor_window::notify(&app, &format!("No se pudo abrir el archivo: {error}"), true),
+        }
+    });
+}
+
+/// Files dropped on the editor; the system gives the paths. Only the first one is opened,
+/// since the editor shows one capture at a time.
+pub fn open_dropped(app: &AppHandle, paths: &[PathBuf]) {
+    if let Some(path) = paths.first() {
+        open_path(app, path.clone());
+    }
+}
+
+#[tauri::command]
+pub fn open_image_file(app: AppHandle) {
+    open_file_dialog(&app);
 }
 
 /// Opens the image on the pasteboard. AppKit is read here, so call it on the main thread
 /// (menu events and synchronous commands run there).
 pub fn open_clipboard(app: &AppHandle) {
     match native::pasteboard_image() {
-        Some(bytes) => open_bytes(app, bytes, &[Format::Png, Format::Tiff], "El portapapeles no tiene una imagen PNG o TIFF"),
+        Some(bytes) => open_with(app, move || Ok(bytes), &[Format::Png, Format::Tiff], "El portapapeles no tiene una imagen PNG o TIFF"),
         None => editor_window::notify(app, "El portapapeles no tiene ninguna imagen", true),
     }
 }
@@ -190,6 +254,25 @@ mod tests {
         let mut png = sample_png(10, 10);
         png.truncate(12);
         assert!(prepare(png, &ALL, "no").is_err());
+    }
+
+    #[test]
+    fn files_are_read_only_when_they_are_regular_and_small() {
+        let dir = std::env::temp_dir().join(format!("snapclone-import-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_file(&dir).unwrap_err(), FILE_UNSUPPORTED, "a folder is not an image");
+        assert!(read_file(&dir.join("missing.png")).is_err());
+        let file = dir.join("captura.png");
+        std::fs::write(&file, sample_png(3, 3)).unwrap();
+        let (png, _) = prepare(read_file(&file).unwrap(), FILE_FORMATS, FILE_UNSUPPORTED).unwrap();
+        assert_eq!(sniff(&png), Some(Format::Png));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn files_must_be_png_or_jpeg_whatever_their_name() {
+        let tiff_bytes = b"II*\0 pretending to be a png".to_vec();
+        assert_eq!(prepare(tiff_bytes, FILE_FORMATS, FILE_UNSUPPORTED).unwrap_err(), FILE_UNSUPPORTED);
     }
 
     #[test]

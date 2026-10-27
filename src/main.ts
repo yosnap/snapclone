@@ -16,7 +16,7 @@ import { bindControls } from "./controls";
 import { DocumentSaver } from "./document-saver";
 import { copyToClipboard, saveToFile } from "./export";
 import { HistoryView, type OpenedCapture, captureUrl } from "./history-view";
-import { listenNotices, openClipboard } from "./open-image";
+import { highlightDrops, listenNotices, openClipboard, openFile } from "./open-image";
 import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
@@ -376,6 +376,8 @@ document.querySelectorAll<HTMLButtonElement>("[data-action=capture]").forEach((b
   button.addEventListener("click", startCapture);
 });
 copyButton.addEventListener("click", copy);
+// ⌘O reaches Rust through the File menu, which works with the editor hidden too.
+document.querySelector<HTMLButtonElement>("#open-button")!.addEventListener("click", () => openFile(showStatus));
 saveButton.addEventListener("click", saveImage);
 
 const historyView = new HistoryView({
@@ -440,6 +442,7 @@ if (!outsideTauri) {
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
   listenNotices(showStatus);
+  highlightDrops(document.querySelector<HTMLElement>(".canvas-area")!);
   // "Ajustes…" in the app menu (⌘,) and in the menu bar icon.
   listen("open-settings", openSettings);
   listen<string>("capture-failed", (event) => {

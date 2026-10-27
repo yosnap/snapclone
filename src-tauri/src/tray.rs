@@ -14,6 +14,7 @@ use crate::{
 const SETTINGS_ID: &str = "settings";
 const CAPTURE_PREFIX: &str = "capture-";
 const CLIPBOARD_ID: &str = "open-clipboard";
+const OPEN_FILE_ID: &str = "open-file";
 
 /// The capture entries, kept so their shortcuts can be updated when they change.
 struct CaptureItems(Vec<(CaptureKind, MenuItem<Wry>)>);
@@ -32,6 +33,7 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
         })
         .collect::<tauri::Result<Vec<_>>>()?;
     let clipboard_item = MenuItem::with_id(app, CLIPBOARD_ID, "Abrir desde el portapapeles", true, None::<&str>)?;
+    let file_item = MenuItem::with_id(app, OPEN_FILE_ID, "Abrir archivo…", true, None::<&str>)?;
     let open_item = MenuItem::with_id(app, "open", "Abrir Snapclone", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, SETTINGS_ID, "Ajustes…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Salir", true, Some("Cmd+Q"))?;
@@ -41,7 +43,7 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
     for (_, item) in &captures {
         menu.append(item)?;
     }
-    menu.append_items(&[&separator, &clipboard_item, &separator, &open_item, &settings_item, &separator, &quit_item])?;
+    menu.append_items(&[&separator, &clipboard_item, &file_item, &separator, &open_item, &settings_item, &separator, &quit_item])?;
     app.manage(CaptureItems(captures));
     show_shortcuts(app, shortcuts);
 
@@ -76,17 +78,27 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
         "open" => editor_window::show(app, false),
         SETTINGS_ID => editor_window::show_settings(app),
         CLIPBOARD_ID => import::open_clipboard(app),
+        OPEN_FILE_ID => import::open_file_dialog(app),
         "quit" => app.exit(0),
         _ => {}
     }
 }
 
-/// Adds "Ajustes…" (⌘,) to the default app menu, after "About".
-pub fn add_settings_to_app_menu(app: &AppHandle) -> tauri::Result<()> {
+/// Adds "Ajustes…" (⌘,) to the default app menu, after "About", and "Abrir archivo…" (⌘O)
+/// to its File menu.
+pub fn extend_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let Some(menu) = app.menu() else { return Ok(()) };
-    let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() else { return Ok(()) };
+    let mut submenus = menu.items()?.into_iter().filter_map(|item| match item {
+        MenuItemKind::Submenu(submenu) => Some(submenu),
+        _ => None,
+    });
+    let (Some(app_menu), Some(file_menu)) = (submenus.next(), submenus.next()) else { return Ok(()) };
     let settings = MenuItem::with_id(app, SETTINGS_ID, "Ajustes…", true, Some("Cmd+,"))?;
     app_menu.insert(&settings, 2)?;
     app_menu.insert(&PredefinedMenuItem::separator(app)?, 3)?;
+
+    let open_file = MenuItem::with_id(app, OPEN_FILE_ID, "Abrir archivo…", true, Some("Cmd+O"))?;
+    file_menu.insert(&open_file, 0)?;
+    file_menu.insert(&PredefinedMenuItem::separator(app)?, 1)?;
     Ok(())
 }

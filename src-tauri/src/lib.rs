@@ -17,7 +17,7 @@ mod stitch;
 mod tray;
 mod wallpaper;
 
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{DragDropEvent, Manager, RunEvent, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -54,6 +54,10 @@ pub fn run() {
             }
             // A shortcut recorder left open never keeps the global shortcuts paused.
             WindowEvent::Focused(false) if window.label() == capture::EDITOR_WINDOW => shortcuts::resume(window.app_handle()),
+            // The paths of files dropped on the editor come from the system, never the page.
+            WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) if window.label() == capture::EDITOR_WINDOW => {
+                import::open_dropped(window.app_handle(), paths);
+            }
             WindowEvent::Destroyed => {
                 selector::on_window_destroyed(window.app_handle(), window.label());
                 scroll::on_window_destroyed(window.app_handle(), window.label());
@@ -82,7 +86,8 @@ pub fn run() {
             shortcuts::pause_shortcuts,
             scroll::finish_scroll,
             scroll::cancel_scroll,
-            import::open_clipboard_image
+            import::open_clipboard_image,
+            import::open_image_file
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));
@@ -90,9 +95,9 @@ pub fn run() {
             app.set_activation_policy(editor_window::activation_policy(editor_window::dock_hidden(app.handle())));
             let registered = shortcuts::init(app.handle());
             tray::build(app.handle(), &registered)?;
-            // ⌘, still works from the editor's button and the menu bar icon without it.
-            if let Err(error) = tray::add_settings_to_app_menu(app.handle()) {
-                eprintln!("settings could not be added to the app menu: {error}");
+            // Without it, the editor's buttons and the menu bar icon still offer every action.
+            if let Err(error) = tray::extend_app_menu(app.handle()) {
+                eprintln!("the app menu could not be extended: {error}");
             }
             editor_window::show(app.handle(), true);
             Ok(())

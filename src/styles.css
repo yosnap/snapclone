@@ -134,6 +134,17 @@ input.text-entry {
   color: var(--muted);
 }
 
+.empty-extra {
+  font-size: 0.9em;
+}
+
+/* A file dragged over the window: a full dashed outline, never a side stripe. */
+.canvas-area.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -10px;
+  border-radius: 12px;
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 type Notify = (message: string, isError?: boolean) => void;
 
@@ -9,6 +10,24 @@ type Notify = (message: string, isError?: boolean) => void;
  */
 export function openClipboard(notify: Notify): void {
   invoke("open_clipboard_image").catch((error) => notify(`No se pudo abrir el portapapeles: ${error}`, true));
+}
+
+/** The system open dialog, shown by Rust; PNG and JPEG only. */
+export function openFile(notify: Notify): void {
+  invoke("open_image_file").catch((error) => notify(`No se pudo abrir el archivo: ${error}`, true));
+}
+
+/**
+ * Highlights `target` while files are dragged over the window. Rust opens what is dropped,
+ * with the paths the system gives it; the page never sees or sends them.
+ */
+export function highlightDrops(target: HTMLElement): void {
+  getCurrentWebview()
+    .onDragDropEvent((event) => {
+      const { type } = event.payload;
+      target.classList.toggle("drop-target", type === "enter" || type === "over");
+    })
+    .catch((error) => console.error("drag and drop events unavailable", error));
 }
 
 /** Messages from actions started outside the editor, such as the menu bar icon. */

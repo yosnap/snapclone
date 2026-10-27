@@ -28,6 +28,7 @@
         <div class="canvas-area">
           <div id="empty-state" class="empty-state">
             <p id="empty-hint">Usa el botón o el icono de la barra de menús.</p>
+            <p class="empty-extra">También puedes arrastrar aquí una imagen o pegarla con <kbd>⌘V</kbd>.</p>
             <button type="button" data-action="capture">Capturar región</button>
           </div>
           <canvas id="editor-canvas" hidden></canvas>
@@ -93,6 +94,7 @@
           <button id="copy-button" type="button" disabled>Copiar <kbd>⌘C</kbd></button>
           <button id="save-button" type="button" class="secondary" disabled>Guardar <kbd>⌘S</kbd></button>
           <button type="button" class="secondary" data-action="capture">Nueva captura</button>
+          <button type="button" id="open-button" class="secondary" title="Abrir una imagen PNG o JPEG (⌘O). También puedes arrastrarla aquí.">Abrir… <kbd>⌘O</kbd></button>
           <button type="button" id="history-button" class="secondary">Historial</button>
           <button type="button" id="settings-button" class="secondary" title="Ajustes (⌘,)">Ajustes</button>
         </div>
