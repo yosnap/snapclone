@@ -3,6 +3,7 @@ import {
   type Annotation,
   type AnnotationKind,
   FONT_STACK,
+  type PixelateAnnotation,
   FONT_WEIGHT,
   type Point,
   TEXT_SIZE,
@@ -10,6 +11,7 @@ import {
   hitTest,
   moved,
 } from "./annotations";
+import type { RedactCategory } from "./auto-redact";
 import type { Layout, Overlay } from "./render";
 
 export type Tool = "select" | AnnotationKind;
@@ -42,6 +44,7 @@ export class AnnotationEditor {
   private undoStack: Annotation[][] = [];
   private redoStack: Annotation[][] = [];
   private textAnchor: Point | null = null;
+  private pendingHistoryChanges: ((list: Annotation[]) => Annotation[])[] = [];
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -79,6 +82,7 @@ export class AnnotationEditor {
     this.drag = null;
     this.undoStack = [];
     this.redoStack = [];
+    this.pendingHistoryChanges = [];
     this.onChange();
   }
 
@@ -112,6 +116,39 @@ export class AnnotationEditor {
     this.undoStack.push(this.annotations);
     this.annotations = next;
     this.dropMissingSelection();
+  }
+
+  /**
+   * Automatic regions behave as part of the capture rather than as edits: they are applied
+   * to every history snapshot, so undo never uncovers them and the category checkboxes
+   * always describe what is on the image. They sit below user annotations, so arrows and
+   * text drawn on top stay visible. During a drag they wait until the drag ends.
+   */
+  addAutoRedactions(regions: PixelateAnnotation[]): void {
+    if (regions.length === 0) return;
+    const ids = new Set(regions.map((region) => region.id));
+    this.applyToHistory((list) => [...regions, ...list.filter((item) => !ids.has(item.id))]);
+  }
+
+  removeAutoRedactions(category: RedactCategory): void {
+    this.applyToHistory((list) => list.filter((item) => !(item.kind === "pixelate" && item.auto === category)));
+  }
+
+  private applyToHistory(change: (list: Annotation[]) => Annotation[]): void {
+    if (this.drag) {
+      this.pendingHistoryChanges.push(change);
+      return;
+    }
+    this.annotations = change(this.annotations);
+    this.undoStack = this.undoStack.map(change);
+    this.redoStack = this.redoStack.map(change);
+    this.dropMissingSelection();
+  }
+
+  private flushPendingHistoryChanges(): void {
+    const pending = this.pendingHistoryChanges;
+    this.pendingHistoryChanges = [];
+    pending.forEach((change) => this.applyToHistory(change));
   }
 
   deleteSelected(): void {
@@ -264,18 +301,18 @@ export class AnnotationEditor {
 
     if (drag.mode === "move") {
       if (drag.changed) this.commit(this.annotations, drag.before);
-      return;
-    }
-
-    const draft = this.draft;
-    this.draft = null;
-    const geometry = this.geometry();
-    if (draft && geometry && this.isLargeEnough(draft, geometry.scale)) {
-      this.selectedId = draft.id;
-      this.commit([...this.annotations, draft]);
     } else {
-      this.onChange();
+      const draft = this.draft;
+      this.draft = null;
+      const geometry = this.geometry();
+      if (draft && geometry && this.isLargeEnough(draft, geometry.scale)) {
+        this.selectedId = draft.id;
+        this.commit([...this.annotations, draft]);
+      } else {
+        this.onChange();
+      }
     }
+    this.flushPendingHistoryChanges();
   }
 
   private cancelDrag(): void {
@@ -283,6 +320,7 @@ export class AnnotationEditor {
     this.drag = null;
     this.draft = null;
     this.onChange();
+    this.flushPendingHistoryChanges();
   }
 
   private shapeFrom(start: Point, end: Point): Annotation {

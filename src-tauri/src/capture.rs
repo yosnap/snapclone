@@ -27,6 +27,11 @@ struct CaptureReady {
     scale: f64,
 }
 
+/// Path of a capture taken in this session, if the id is known.
+pub fn path_of(app: &AppHandle, id: &str) -> Option<PathBuf> {
+    app.state::<Captures>().files.lock().unwrap().get(id).cloned()
+}
+
 /// Starts a region capture in the background; ignored while another one is running.
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(capture_region(app));
@@ -127,7 +132,7 @@ fn png_scale(png: &[u8]) -> f64 {
 /// Serves `capture://localhost/<id>` with CORS so the editor canvas stays exportable.
 pub fn serve(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
     let id = request.uri().path().trim_start_matches('/');
-    let path = app.state::<Captures>().files.lock().unwrap().get(id).cloned();
+    let path = path_of(app, id);
     let response = http::Response::builder().header("Access-Control-Allow-Origin", "*");
     match path.and_then(|path| std::fs::read(path).ok()) {
         Some(bytes) => response.header("Content-Type", "image/png").body(bytes),

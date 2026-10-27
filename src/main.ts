@@ -1,7 +1,15 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AnnotationEditor, type Tool } from "./annotation-editor";
-import { ANNOTATION_COLORS } from "./annotations";
+import { ANNOTATION_COLORS, type PixelateAnnotation } from "./annotations";
+import {
+  type RedactCategory,
+  type SensitiveRegion,
+  bindRedactControls,
+  defaultRedactSettings,
+  detectSensitive,
+  toPixelateAnnotations,
+} from "./auto-redact";
 import { bindControls } from "./controls";
 import { copyToClipboard, saveToFile } from "./export";
 import { type Capture, layout, render } from "./render";
@@ -19,7 +27,15 @@ const toolbar = document.querySelector<HTMLElement>("#toolbar")!;
 const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
 
 const style = defaultStyle();
+const redactSettings = defaultRedactSettings();
 let capture: Capture | null = null;
+let captureId: string | null = null;
+/** Every region found in the current capture, with stable ids so re-enabling never duplicates. */
+let detectedRegions: PixelateAnnotation[] = [];
+let detectedFor: string | null = null;
+/** Capture whose text is being analysed; exports wait for it so nothing leaves unredacted. */
+let detectingFor: string | null = null;
+const SEARCHING_MESSAGE = "Buscando datos sensibles…";
 let renderQueued = false;
 let exporting = false;
 
@@ -64,13 +80,63 @@ async function loadCapture({ id, scale }: CaptureReady): Promise<void> {
   await image.decode();
 
   capture = { image, scale };
+  captureId = id;
+  detectedRegions = [];
+  detectedFor = null;
   editor.reset();
   emptyState.hidden = true;
   canvas.hidden = false;
-  copyButton.disabled = false;
-  saveButton.disabled = false;
   showStatus("");
+  syncExportButtons();
   scheduleRender();
+  // Skip Vision entirely while every category is off; enabling one runs it on demand.
+  if (Object.values(redactSettings).some(Boolean)) runAutoRedaction(id);
+}
+
+function syncExportButtons(): void {
+  const blocked = !capture || detectingFor === captureId;
+  copyButton.disabled = blocked;
+  saveButton.disabled = blocked;
+}
+
+function regionsOf(category: RedactCategory): PixelateAnnotation[] {
+  return detectedRegions.filter((region) => region.auto === category);
+}
+
+async function runAutoRedaction(id: string): Promise<void> {
+  if (detectedFor === id || detectingFor === id) return;
+  detectingFor = id;
+  syncExportButtons();
+  showStatus(SEARCHING_MESSAGE);
+  try {
+    const regions: SensitiveRegion[] = await detectSensitive(id);
+    // A newer capture may have replaced this one while Vision was running.
+    if (id !== captureId || !capture) return;
+    detectedRegions = toPixelateAnnotations(regions, capture.image.naturalWidth, capture.image.naturalHeight, capture.scale);
+    detectedFor = id;
+    const enabled = detectedRegions.filter((region) => region.auto && redactSettings[region.auto]);
+    editor.addAutoRedactions(enabled);
+    // Only replace our own progress message, never an export confirmation shown meanwhile.
+    if (status.textContent === SEARCHING_MESSAGE) {
+      showStatus(enabled.length > 0 ? `Tachados automáticamente: ${enabled.length}` : "");
+    }
+  } catch (error) {
+    if (id === captureId) showStatus(`No se pudo analizar el texto, revisa la captura antes de compartirla: ${error}`, true);
+  } finally {
+    if (detectingFor === id) detectingFor = null;
+    syncExportButtons();
+  }
+}
+
+function toggleRedaction(category: RedactCategory, enabled: boolean): void {
+  if (!capture || !captureId) return;
+  if (!enabled) {
+    editor.removeAutoRedactions(category);
+  } else if (detectedFor === captureId) {
+    editor.addAutoRedactions(regionsOf(category));
+  } else {
+    runAutoRedaction(captureId);
+  }
 }
 
 function showStatus(message: string, isError = false): void {
@@ -81,6 +147,10 @@ function showStatus(message: string, isError = false): void {
 /** Renders synchronously before exporting, so a pending frame never leaks into the output. */
 async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string | null>, failure: string) {
   if (!capture || exporting) return;
+  if (detectingFor === captureId) {
+    showStatus("Espera a que termine la búsqueda de datos sensibles", true);
+    return;
+  }
   exporting = true;
   try {
     render(canvas, capture, style, editor.overlay(false));
@@ -109,6 +179,7 @@ function startCapture(): void {
 }
 
 bindControls(sidebar, style, scheduleRender);
+bindRedactControls(sidebar.querySelector<HTMLElement>("#redact-options")!, redactSettings, toggleRedaction);
 buildToolbar();
 
 // The Vite dev server is reachable from any browser, but only the Tauri window has the Rust bridge.

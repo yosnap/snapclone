@@ -1,5 +1,6 @@
 mod capture;
 mod export;
+mod redact;
 mod tray;
 
 use tauri::WindowEvent;
@@ -41,7 +42,8 @@ pub fn run() {
             capture::start_capture,
             export::copy_png,
             export::choose_save_path,
-            export::save_image
+            export::save_image,
+            redact::detect_sensitive
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
