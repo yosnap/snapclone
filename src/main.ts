@@ -2,6 +2,14 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AnnotationEditor, type Tool } from "./annotation-editor";
 import { ANNOTATION_COLORS } from "./annotations";
+import {
+  type RedactCategory,
+  type SensitiveRegion,
+  bindRedactControls,
+  defaultRedactSettings,
+  detectSensitive,
+  toPixelateAnnotations,
+} from "./auto-redact";
 import { bindControls } from "./controls";
 import { copyToClipboard, saveToFile } from "./export";
 import { type Capture, layout, render } from "./render";
@@ -19,7 +27,11 @@ const toolbar = document.querySelector<HTMLElement>("#toolbar")!;
 const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
 
 const style = defaultStyle();
+const redactSettings = defaultRedactSettings();
 let capture: Capture | null = null;
+let captureId: string | null = null;
+/** Every region found in the current capture, kept so a category can be re-enabled. */
+let detectedRegions: SensitiveRegion[] = [];
 let renderQueued = false;
 let exporting = false;
 
@@ -64,6 +76,8 @@ async function loadCapture({ id, scale }: CaptureReady): Promise<void> {
   await image.decode();
 
   capture = { image, scale };
+  captureId = id;
+  detectedRegions = [];
   editor.reset();
   emptyState.hidden = true;
   canvas.hidden = false;
@@ -71,6 +85,36 @@ async function loadCapture({ id, scale }: CaptureReady): Promise<void> {
   saveButton.disabled = false;
   showStatus("");
   scheduleRender();
+  runAutoRedaction(id);
+}
+
+function pixelateRegions(regions: SensitiveRegion[]) {
+  if (!capture) return [];
+  return toPixelateAnnotations(regions, capture.image.naturalWidth, capture.image.naturalHeight, capture.scale);
+}
+
+async function runAutoRedaction(id: string): Promise<void> {
+  showStatus("Buscando datos sensibles…");
+  try {
+    const regions = await detectSensitive(id);
+    // A newer capture may have replaced this one while Vision was running.
+    if (id !== captureId) return;
+    detectedRegions = regions;
+    const enabled = regions.filter((region) => redactSettings[region.category]);
+    editor.addAutoRedactions(pixelateRegions(enabled));
+    showStatus(enabled.length > 0 ? `Tachados automáticamente: ${enabled.length}` : "");
+  } catch (error) {
+    if (id === captureId) showStatus(`No se pudo analizar el texto: ${error}`, true);
+  }
+}
+
+function toggleRedaction(category: RedactCategory, enabled: boolean): void {
+  if (!capture) return;
+  if (enabled) {
+    editor.addAutoRedactions(pixelateRegions(detectedRegions.filter((region) => region.category === category)));
+  } else {
+    editor.removeAutoRedactions(category);
+  }
 }
 
 function showStatus(message: string, isError = false): void {
@@ -109,6 +153,7 @@ function startCapture(): void {
 }
 
 bindControls(sidebar, style, scheduleRender);
+bindRedactControls(sidebar.querySelector<HTMLElement>("#redact-options")!, redactSettings, toggleRedaction);
 buildToolbar();
 
 // The Vite dev server is reachable from any browser, but only the Tauri window has the Rust bridge.

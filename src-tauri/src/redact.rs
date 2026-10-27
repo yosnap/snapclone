@@ -1,0 +1,230 @@
+//! Automatic redaction: Vision reads the capture's text and regexes choose what to hide.
+//! Patterns start from the ones Xnapper ships, tightened where they misfire on ordinary
+//! text (times read as IPv6, any digit run read as a card number).
+
+use std::{ops::Range, sync::LazyLock};
+
+use regex::Regex;
+use serde::Serialize;
+use tauri::AppHandle;
+
+use crate::capture;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Category {
+    Email,
+    CreditCard,
+    IpAddress,
+    ApiKey,
+}
+
+/// Normalized (0..1) box with the origin at the capture's top-left corner.
+#[derive(Debug, Serialize)]
+pub struct SensitiveRegion {
+    category: Category,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+static PATTERNS: LazyLock<Vec<(Category, Regex)>> = LazyLock::new(|| {
+    let ipv4_octet = r"(?:25[0-5]|2[0-4]\d|1?\d?\d)";
+    [
+        (Category::Email, r"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}".to_string()),
+        // Digit groups separated by spaces or dashes; `is_card_number` validates the digits.
+        (Category::CreditCard, r"\b\d(?:[ -]?\d){12,18}\b".to_string()),
+        (Category::IpAddress, format!(r"\b(?:{ipv4_octet}\.){{3}}{ipv4_octet}\b")),
+        // Full IPv6, or compressed with `::`, so clock times like 12:30 never match.
+        (Category::IpAddress, r"(?i)\b(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}\b".to_string()),
+        (Category::IpAddress, r"(?i)\b(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?".to_string()),
+        (Category::ApiKey, r"[A-Za-z0-9\-_/]{32,}".to_string()),
+    ]
+    .into_iter()
+    .map(|(category, pattern)| (category, Regex::new(&pattern).expect("static pattern is valid")))
+    .collect()
+});
+
+/// Byte ranges of sensitive substrings in one recognized line.
+pub fn find_sensitive(text: &str) -> Vec<(Category, Range<usize>)> {
+    PATTERNS
+        .iter()
+        .flat_map(|(category, regex)| regex.find_iter(text).map(move |found| (*category, found)))
+        .filter(|(category, found)| match category {
+            Category::CreditCard => is_card_number(found.as_str()),
+            Category::ApiKey => is_key_like(found.as_str()),
+            _ => true,
+        })
+        .map(|(category, found)| (category, found.range()))
+        .collect()
+}
+
+/// 13–19 digits passing the Luhn checksum, which every card number satisfies.
+fn is_card_number(candidate: &str) -> bool {
+    let digits: Vec<u32> = candidate.chars().filter_map(|c| c.to_digit(10)).collect();
+    if !(13..=19).contains(&digits.len()) {
+        return false;
+    }
+    let sum: u32 = digits
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(index, &digit)| match index % 2 {
+            0 => digit,
+            _ if digit * 2 > 9 => digit * 2 - 9,
+            _ => digit * 2,
+        })
+        .sum();
+    sum.is_multiple_of(10)
+}
+
+/// Keys mix letters and digits; long plain words or paths without digits are not keys.
+fn is_key_like(candidate: &str) -> bool {
+    candidate.chars().any(|c| c.is_ascii_digit()) && candidate.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+/// Returns every sensitive region in the capture; the editor filters by enabled category.
+#[tauri::command]
+pub async fn detect_sensitive(app: AppHandle, id: String) -> Result<Vec<SensitiveRegion>, String> {
+    let path = capture::path_of(&app, &id).ok_or("unknown capture")?;
+    tauri::async_runtime::spawn_blocking(move || vision::detect(&path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[cfg(target_os = "macos")]
+mod vision {
+    use std::path::Path;
+
+    use objc2::{AnyThread, msg_send, rc::Retained};
+    use objc2_foundation::{NSArray, NSDictionary, NSError, NSRange, NSString, NSURL};
+    use objc2_vision::{
+        VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedText, VNRectangleObservation, VNRequest,
+        VNRequestTextRecognitionLevel,
+    };
+
+    use super::{Category, SensitiveRegion, find_sensitive};
+
+    pub fn detect(path: &Path) -> Result<Vec<SensitiveRegion>, String> {
+        // Runs on a worker thread, so drain autoreleased Vision objects here.
+        objc2::rc::autoreleasepool(|_| detect_in_pool(path))
+    }
+
+    fn detect_in_pool(path: &Path) -> Result<Vec<SensitiveRegion>, String> {
+        let path = path.to_str().ok_or("capture path is not UTF-8")?;
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+        // SAFETY: an empty options dictionary is valid for every VNImageOption key type.
+        let handler = unsafe {
+            VNImageRequestHandler::initWithURL_options(VNImageRequestHandler::alloc(), &url, &NSDictionary::new())
+        };
+
+        let request = VNRecognizeTextRequest::new();
+        request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
+        // Correction "fixes" keys and addresses into dictionary words, which breaks matching.
+        request.setUsesLanguageCorrection(false);
+        let as_request: &VNRequest = &request;
+        handler
+            .performRequests_error(&NSArray::from_slice(&[as_request]))
+            .map_err(|error| error.localizedDescription().to_string())?;
+
+        let mut regions = Vec::new();
+        let Some(observations) = request.results() else {
+            return Ok(regions);
+        };
+        for observation in observations.iter() {
+            let Some(text) = observation.topCandidates(1).firstObject() else {
+                continue;
+            };
+            let line = text.string().to_string();
+            for (category, range) in find_sensitive(&line) {
+                regions.extend(bounding_box(&text, &line, range, category));
+            }
+        }
+        Ok(regions)
+    }
+
+    /// Vision addresses characters in UTF-16 units and uses a bottom-left origin.
+    fn bounding_box(
+        text: &VNRecognizedText,
+        line: &str,
+        bytes: std::ops::Range<usize>,
+        category: Category,
+    ) -> Option<SensitiveRegion> {
+        let start = line[..bytes.start].encode_utf16().count();
+        let length = line[bytes].encode_utf16().count();
+        // SAFETY: the range lies within the candidate string it was computed from.
+        let observation: Result<Retained<VNRectangleObservation>, Retained<NSError>> =
+            unsafe { msg_send![text, boundingBoxForRange: NSRange::new(start, length), error: _] };
+        // SAFETY: reading a plain CGRect property.
+        let rect = unsafe { observation.ok()?.boundingBox() };
+        Some(SensitiveRegion {
+            category,
+            x: rect.origin.x,
+            y: 1.0 - rect.origin.y - rect.size.height,
+            width: rect.size.width,
+            height: rect.size.height,
+        })
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod vision {
+    pub fn detect(_path: &std::path::Path) -> Result<Vec<super::SensitiveRegion>, String> {
+        Err("text recognition is only implemented on macOS".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Category, find_sensitive};
+
+    fn categories(text: &str) -> Vec<(Category, &str)> {
+        find_sensitive(text).into_iter().map(|(category, range)| (category, &text[range])).collect()
+    }
+
+    #[test]
+    fn finds_emails() {
+        assert_eq!(categories("Escríbeme a ana.lopez@ejemplo.es hoy"), vec![(Category::Email, "ana.lopez@ejemplo.es")]);
+    }
+
+    #[test]
+    fn finds_luhn_valid_cards_only() {
+        assert_eq!(categories("Tarjeta 4111 1111 1111 1111"), vec![(Category::CreditCard, "4111 1111 1111 1111")]);
+        assert!(categories("Pedido 4111 1111 1111 1112").is_empty());
+        assert!(categories("Tel 600 123 456").is_empty());
+    }
+
+    #[test]
+    fn finds_ip_addresses_but_not_times() {
+        assert_eq!(categories("host 192.168.1.20 up"), vec![(Category::IpAddress, "192.168.1.20")]);
+        assert_eq!(categories("via fe80::1ff:fe23:4567:890a"), vec![(Category::IpAddress, "fe80::1ff:fe23:4567:890a")]);
+        assert!(categories("Reunión a las 12:30 o 09:15:00").is_empty());
+        assert!(categories("version 1.2.3.400").is_empty());
+    }
+
+    #[test]
+    fn finds_keys_with_letters_and_digits() {
+        let key = "q7Rt2vX9bN4mK8pL3sD6fG1hJ5wZ0cYeA";
+        assert_eq!(categories(&format!("KEY={key}")), vec![(Category::ApiKey, key)]);
+        assert!(categories("Supercalifragilisticexpialidociousword").is_empty());
+    }
+
+    /// Runs real Vision OCR: `REDACT_SAMPLE=/path/to.png cargo test -- --ignored --nocapture`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs a sample image in REDACT_SAMPLE"]
+    fn vision_finds_regions_in_sample_image() {
+        let path = std::env::var("REDACT_SAMPLE").expect("REDACT_SAMPLE points to an image");
+        let regions = super::vision::detect(std::path::Path::new(&path)).expect("vision runs");
+        println!("{regions:#?}");
+        assert!(!regions.is_empty());
+    }
+
+    #[test]
+    fn utf16_offsets_survive_multibyte_prefixes() {
+        let line = "Correo 📧: ana@ejemplo.es";
+        let (_, range) = find_sensitive(line).remove(0);
+        assert_eq!(line[..range.start].encode_utf16().count(), "Correo 📧: ".encode_utf16().count());
+    }
+}

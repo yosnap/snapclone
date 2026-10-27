@@ -232,6 +232,18 @@ input[type="text"] {
   font: inherit;
 }
 
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .actions {
   display: flex;
   flex-direction: column;

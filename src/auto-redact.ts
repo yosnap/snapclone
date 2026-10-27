@@ -1,0 +1,70 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { PixelateAnnotation } from "./annotations";
+
+export type RedactCategory = "email" | "credit-card" | "ip-address" | "api-key";
+
+/** Normalized (0..1) box from the backend, origin at the capture's top-left corner. */
+export type SensitiveRegion = { category: RedactCategory; x: number; y: number; width: number; height: number };
+
+export const REDACT_CATEGORIES: { id: RedactCategory; label: string }[] = [
+  { id: "email", label: "Emails" },
+  { id: "credit-card", label: "Tarjetas" },
+  { id: "ip-address", label: "Direcciones IP" },
+  { id: "api-key", label: "Claves de API" },
+];
+
+/** Breathing room around Vision's tight glyph boxes, in points. */
+const REGION_MARGIN = 2;
+
+export type RedactSettings = Record<RedactCategory, boolean>;
+
+export function defaultRedactSettings(): RedactSettings {
+  return { email: true, "credit-card": true, "ip-address": true, "api-key": true };
+}
+
+export function detectSensitive(captureId: string): Promise<SensitiveRegion[]> {
+  return invoke<SensitiveRegion[]>("detect_sensitive", { id: captureId });
+}
+
+export function toPixelateAnnotations(
+  regions: SensitiveRegion[],
+  imageWidth: number,
+  imageHeight: number,
+  scale: number,
+): PixelateAnnotation[] {
+  const margin = REGION_MARGIN * scale;
+  return regions.map((region) => {
+    const x = Math.max(0, region.x * imageWidth - margin);
+    const y = Math.max(0, region.y * imageHeight - margin);
+    return {
+      id: crypto.randomUUID(),
+      kind: "pixelate",
+      auto: region.category,
+      x,
+      y,
+      width: Math.min(imageWidth, region.x * imageWidth + region.width * imageWidth + margin) - x,
+      height: Math.min(imageHeight, region.y * imageHeight + region.height * imageHeight + margin) - y,
+    };
+  });
+}
+
+/** Renders one checkbox per category; `onToggle` runs with the category that changed. */
+export function bindRedactControls(
+  container: HTMLElement,
+  settings: RedactSettings,
+  onToggle: (category: RedactCategory, enabled: boolean) => void,
+): void {
+  for (const { id, label } of REDACT_CATEGORIES) {
+    const row = document.createElement("label");
+    row.className = "check";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = settings[id];
+    checkbox.addEventListener("change", () => {
+      settings[id] = checkbox.checked;
+      onToggle(id, checkbox.checked);
+    });
+    row.append(checkbox, label);
+    container.append(row);
+  }
+}

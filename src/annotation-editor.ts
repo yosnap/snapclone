@@ -3,6 +3,7 @@ import {
   type Annotation,
   type AnnotationKind,
   FONT_STACK,
+  type PixelateAnnotation,
   FONT_WEIGHT,
   type Point,
   TEXT_SIZE,
@@ -10,6 +11,7 @@ import {
   hitTest,
   moved,
 } from "./annotations";
+import type { RedactCategory } from "./auto-redact";
 import type { Layout, Overlay } from "./render";
 
 export type Tool = "select" | AnnotationKind;
@@ -111,6 +113,20 @@ export class AnnotationEditor {
     if (!next) return;
     this.undoStack.push(this.annotations);
     this.annotations = next;
+    this.dropMissingSelection();
+  }
+
+  /** Adds automatically detected regions as one undoable step. */
+  addAutoRedactions(regions: PixelateAnnotation[]): void {
+    if (regions.length === 0) return;
+    this.commit([...this.annotations, ...regions]);
+  }
+
+  /** Removes the automatic regions of one category, leaving the user's own pixelation alone. */
+  removeAutoRedactions(category: RedactCategory): void {
+    const next = this.annotations.filter((item) => !(item.kind === "pixelate" && item.auto === category));
+    if (next.length === this.annotations.length) return;
+    this.commit(next);
     this.dropMissingSelection();
   }
 

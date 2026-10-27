@@ -25,6 +25,7 @@ tauri-plugin-global-shortcut = "2.4.1"
 uuid = { version = "1.29.0", features = ["v4"] }
 tokio = { version = "1.54.1", features = ["process"] }
 tauri-plugin-dialog = "2.8.3"
+regex = "1.13.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -36,5 +37,8 @@ panic = "abort"
 strip = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSPasteboard"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSData", "NSString"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFCGTypes"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSObject", "NSRange", "NSString", "NSURL"] }
+objc2-vision = { version = "0.3", default-features = false, features = ["VNRequest", "VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNTypes", "objc2-core-foundation"] }

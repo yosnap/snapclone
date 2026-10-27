@@ -1,3 +1,5 @@
+import type { RedactCategory } from "./auto-redact";
+
 /**
  * Annotation model and drawing. Coordinates are capture pixels with the origin at the
  * capture's top-left corner, so annotations stay put when padding or ratio change.
@@ -10,7 +12,8 @@ type Colored = { id: string; color: string };
 export type ArrowAnnotation = Colored & { kind: "arrow"; from: Point; to: Point };
 export type RectAnnotation = Colored & Box & { kind: "rect" };
 export type TextAnnotation = Colored & { kind: "text"; at: Point; text: string };
-export type PixelateAnnotation = Box & { id: string; kind: "pixelate" };
+/** `auto` marks regions found by automatic redaction, so a category can be toggled off later. */
+export type PixelateAnnotation = Box & { id: string; kind: "pixelate"; auto?: RedactCategory };
 export type Annotation = ArrowAnnotation | RectAnnotation | TextAnnotation | PixelateAnnotation;
 export type AnnotationKind = Annotation["kind"];
 
