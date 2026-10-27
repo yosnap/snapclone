@@ -52,6 +52,25 @@ pub fn hide(app: &AppHandle) {
     sync_reopen_shortcut(app, false);
 }
 
+/// "Ocultar Snapclone" (⌘Q): closes every window and gives the focus back to the previous
+/// app. The process keeps running in the menu bar with its global shortcuts; the Dock icon,
+/// the menu bar or a capture bring the editor back.
+pub fn hide_app(app: &AppHandle) {
+    for (label, window) in app.webview_windows() {
+        // Selector and scroll windows clean up their session when they close.
+        if label != EDITOR_WINDOW
+            && let Err(error) = window.close()
+        {
+            eprintln!("window {label} could not be closed: {error}");
+        }
+    }
+    hide(app);
+    #[cfg(target_os = "macos")]
+    if let Err(error) = app.hide() {
+        eprintln!("the app could not be hidden: {error}");
+    }
+}
+
 /// ⇧⌘Z is redo while a capture is open in the visible editor, so the app menu only takes it
 /// for "Reabrir última captura" when the editor is hidden or empty. Visibility is passed in
 /// because a hide requested off the main thread may not have happened yet.

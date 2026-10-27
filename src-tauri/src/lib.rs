@@ -111,10 +111,12 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
+        .run(|app, event| match event {
             // A click on the Dock icon, or opening the app again while it runs.
-            if let RunEvent::Reopen { .. } = event {
-                editor_window::show(app, false);
-            }
+            RunEvent::Reopen { .. } => editor_window::show(app, false),
+            // Without a code, the last window closing asked to exit; the app lives on in the
+            // menu bar. "Salir del todo" exits with a code, which is let through.
+            RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
+            _ => {}
         });
 }

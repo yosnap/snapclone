@@ -17,6 +17,11 @@ const CLIPBOARD_ID: &str = "open-clipboard";
 const OPEN_FILE_ID: &str = "open-file";
 const REOPEN_ID: &str = "reopen-last";
 const COPY_TEXT_ID: &str = "copy-last-text";
+/// ⌘Q hides: the app stays in the menu bar with its shortcuts, like Xnapper.
+const HIDE_ID: &str = "hide-app";
+const HIDE_TITLE: &str = "Ocultar Snapclone";
+const QUIT_ID: &str = "quit";
+const QUIT_TITLE: &str = "Salir del todo";
 /// The app menu's copy, whose ⇧⌘Z comes and goes; see `editor_window::sync_reopen_shortcut`.
 const REOPEN_SHORTCUT_ID: &str = "reopen-last-shortcut";
 const REOPEN_ACCELERATOR: &str = "Shift+Cmd+Z";
@@ -48,14 +53,15 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
     let text_menu = Submenu::with_items(app, "Texto detectado", true, &[&copy_text_item])?;
     let open_item = MenuItem::with_id(app, "open", "Abrir Snapclone", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, SETTINGS_ID, "Ajustes…", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Salir", true, Some("Cmd+Q"))?;
+    let hide_item = MenuItem::with_id(app, HIDE_ID, HIDE_TITLE, true, Some("Cmd+Q"))?;
+    let quit_item = MenuItem::with_id(app, QUIT_ID, QUIT_TITLE, true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
 
     let menu = Menu::new(app)?;
     for (_, item) in &captures {
         menu.append(item)?;
     }
-    menu.append_items(&[&separator, &clipboard_item, &file_item, &reopen_item, &text_menu, &separator, &open_item, &settings_item, &separator, &quit_item])?;
+    menu.append_items(&[&separator, &clipboard_item, &file_item, &reopen_item, &text_menu, &separator, &open_item, &settings_item, &separator, &hide_item, &quit_item])?;
     app.manage(CaptureItems(captures));
     show_shortcuts(app, shortcuts);
 
@@ -94,12 +100,14 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
         REOPEN_ID => editor_window::reopen_last(app),
         COPY_TEXT_ID => ocr::copy_latest_text(app),
         REOPEN_SHORTCUT_ID => editor_window::reopen_shortcut(app),
-        "quit" => app.exit(0),
+        HIDE_ID => editor_window::hide_app(app),
+        QUIT_ID => app.exit(0),
         _ => {}
     }
 }
 
-/// Adds "Ajustes…" (⌘,) to the default app menu, after "About", and "Abrir archivo…" (⌘O)
+/// Adds "Ajustes…" (⌘,) to the default app menu, after "About", replaces its Quit with
+/// "Ocultar Snapclone" (⌘Q) and "Salir del todo", and adds "Abrir archivo…" (⌘O)
 /// and "Reabrir última captura" (⇧⌘Z) to its File menu, which comes before Edit so its ⇧⌘Z
 /// wins over Redo while it is on.
 pub fn extend_app_menu(app: &AppHandle) -> tauri::Result<()> {
@@ -112,6 +120,12 @@ pub fn extend_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let settings = MenuItem::with_id(app, SETTINGS_ID, "Ajustes…", true, Some("Cmd+,"))?;
     app_menu.insert(&settings, 2)?;
     app_menu.insert(&PredefinedMenuItem::separator(app)?, 3)?;
+    // The default app menu ends with the predefined Quit, which would end the process on ⌘Q.
+    if let Some(MenuItemKind::Predefined(quit)) = app_menu.items()?.pop() {
+        app_menu.remove(&quit)?;
+    }
+    app_menu.append(&MenuItem::with_id(app, HIDE_ID, HIDE_TITLE, true, Some("Cmd+Q"))?)?;
+    app_menu.append(&MenuItem::with_id(app, QUIT_ID, QUIT_TITLE, true, None::<&str>)?)?;
 
     let open_file = MenuItem::with_id(app, OPEN_FILE_ID, "Abrir archivo…", true, Some("Cmd+O"))?;
     // Starts on: the editor has no capture until the page reports one.
