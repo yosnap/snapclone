@@ -1,38 +1,34 @@
 import { WALLPAPER_BACKGROUND, WALLPAPER_URL } from "./style";
 
-type State = "idle" | "loading" | "ready" | "failed";
-let state: State = "idle";
+/** Rust's identifier for the picture it served, built from its path and modification date. */
+const VERSION_HEADER = "X-Wallpaper-Version";
+const VERSION_URL = `${WALLPAPER_URL}/version`;
+let loadedVersion: string | null = null;
+let pending: Promise<HTMLImageElement> | null = null;
 
 /**
- * Loads the desktop picture into `WALLPAPER_BACKGROUND` once; `done` gets `null` when it is
- * ready or the reason it is not. A failure is reported once and not retried until the user
- * picks the wallpaper again (`refreshWallpaper`), so renders never loop on it.
+ * Makes `WALLPAPER_BACKGROUND.image` current and resolves with it. Called whenever the
+ * wallpaper is asked for (opening a capture, picking the swatch, exporting), never per
+ * frame: a failure is retried on the next request, and a picture that changed since it was
+ * loaded is loaded again. Concurrent requests share one load. Rejects with the reason.
  */
-export function ensureWallpaper(done: (error: string | null) => void): void {
-  if (state !== "idle") return;
-  state = "loading";
-  fetchWallpaper().then(
-    (image) => {
-      WALLPAPER_BACKGROUND.image = image;
-      state = "ready";
-      done(null);
-    },
-    (error: unknown) => {
-      state = "failed";
-      done(error instanceof Error ? error.message : String(error));
-    },
-  );
+export function requestWallpaper(): Promise<HTMLImageElement> {
+  pending ??= refresh().finally(() => {
+    pending = null;
+  });
+  return pending;
 }
 
-/** Choosing the wallpaper reads it afresh, in case it changed or failed before. */
-export function refreshWallpaper(): void {
-  if (state !== "loading") state = "idle";
+/** The reason a request failed, as the status line shows it. */
+export function wallpaperError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-/** Fetched rather than set as `src`, so Rust's reason reaches the status line on failure. */
-async function fetchWallpaper(): Promise<HTMLImageElement> {
-  const response = await fetch(WALLPAPER_URL);
-  if (!response.ok) throw new Error((await response.text()) || `error ${response.status}`);
+async function refresh(): Promise<HTMLImageElement> {
+  const current = WALLPAPER_BACKGROUND.image;
+  if (current && loadedVersion !== null && (await fetchText(VERSION_URL)) === loadedVersion) return current;
+  const response = await fetchChecked(WALLPAPER_URL);
+  const version = response.headers.get(VERSION_HEADER);
   // A blob URL is same-origin, so drawing it never taints the exported canvas.
   const url = URL.createObjectURL(await response.blob());
   const image = new Image();
@@ -43,9 +39,21 @@ async function fetchWallpaper(): Promise<HTMLImageElement> {
     URL.revokeObjectURL(url);
     throw new Error("el formato de la imagen no se puede leer");
   }
-  const previous = WALLPAPER_BACKGROUND.image;
-  if (previous) URL.revokeObjectURL(previous.src);
+  if (current) URL.revokeObjectURL(current.src);
+  WALLPAPER_BACKGROUND.image = image;
+  loadedVersion = version;
   return image;
+}
+
+/** Fetched rather than set as `src`, so Rust's reason reaches the status line on failure. */
+async function fetchChecked(url: string): Promise<Response> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error((await response.text()) || `error ${response.status}`);
+  return response;
+}
+
+async function fetchText(url: string): Promise<string> {
+  return (await fetchChecked(url)).text();
 }
 
 /** Blur radius on the reduced copy; about Xnapper's softness at any output size. */

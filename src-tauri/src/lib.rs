@@ -8,6 +8,8 @@ mod history;
 mod images;
 mod ocr;
 mod import;
+#[cfg(target_os = "macos")]
+mod image_io;
 mod prefs;
 mod redact;
 mod screen;
@@ -32,6 +34,7 @@ pub fn run() {
         .manage(scroll::ScrollCapture::default())
         .manage(editor_window::EditorContent::default())
         .manage(ocr::OcrCache::default())
+        .manage(wallpaper::WallpaperCache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()

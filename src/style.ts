@@ -36,6 +36,8 @@ export const GRADIENT_PRESETS: Extract<Background, { kind: "gradient" }>[] = [
 
 /** Served by Rust from the main display's desktop picture; the page never names a file. */
 export const WALLPAPER_URL = "capture://localhost/wallpaper";
+/** A small copy for the swatch, so the grid never loads the full picture. */
+const WALLPAPER_THUMBNAIL_URL = `${WALLPAPER_URL}/thumbnail`;
 
 /** The single wallpaper background, so it is recognised by identity like the gradient presets. */
 export const WALLPAPER_BACKGROUND: Extract<Background, { kind: "wallpaper" }> = { kind: "wallpaper", image: null };
@@ -77,6 +79,6 @@ export function backgroundPreviewCss(background: Background): string {
     case "image":
       return `center / cover url("${background.image.src}")`;
     case "wallpaper":
-      return `center / cover url("${WALLPAPER_URL}")`;
+      return `center / cover url("${WALLPAPER_THUMBNAIL_URL}")`;
   }
 }

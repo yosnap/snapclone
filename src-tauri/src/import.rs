@@ -46,13 +46,18 @@ pub fn sniff(bytes: &[u8]) -> Option<Format> {
 }
 
 /// Turns an accepted image into PNG bytes plus the scale to style it with. PNGs are kept as
-/// they are, so their colour profile and `pHYs` survive; other formats are re-encoded.
+/// they are, so their colour profile and `pHYs` survive; other formats are re-encoded. The
+/// size is checked from the header first, so an oversized image is refused before any
+/// decoding allocates its pixels.
 pub fn prepare(bytes: Vec<u8>, accepted: &[Format], unsupported: &str) -> Result<(Vec<u8>, f64), String> {
     let format = sniff(&bytes).filter(|format| accepted.contains(format)).ok_or(unsupported)?;
+    let (width, height) = native::header_size(&bytes).ok_or("La imagen está dañada o no se puede leer")?;
+    check_size(width, height)?;
     let png = match format {
         Format::Png => bytes,
         Format::Jpeg | Format::Tiff => native::to_png(&bytes)?,
     };
+    // The converted PNG is checked again: its header is what the editor will decode.
     let (width, height) = ImageReader::new(Cursor::new(&png))
         .with_guessed_format()
         .map_err(|error| error.to_string())?
@@ -168,6 +173,8 @@ mod native {
     };
     use objc2_foundation::{NSData, NSDictionary};
 
+    pub use crate::image_io::header_size;
+
     /// PNG first: it is what screenshots copy and needs no conversion. Apps that only copy
     /// TIFF (Preview, some browsers) still work.
     pub fn pasteboard_image() -> Option<Vec<u8>> {
@@ -200,6 +207,11 @@ mod native {
 
 #[cfg(not(target_os = "macos"))]
 mod native {
+    /// Without ImageIO the PNG header check after conversion is the only one.
+    pub fn header_size(_bytes: &[u8]) -> Option<(u32, u32)> {
+        Some((1, 1))
+    }
+
     pub fn pasteboard_image() -> Option<Vec<u8>> {
         None
     }
@@ -273,6 +285,23 @@ mod tests {
     fn files_must_be_png_or_jpeg_whatever_their_name() {
         let tiff_bytes = b"II*\0 pretending to be a png".to_vec();
         assert_eq!(prepare(tiff_bytes, FILE_FORMATS, FILE_UNSUPPORTED).unwrap_err(), FILE_UNSUPPORTED);
+    }
+
+    /// A real PNG far wider than the editor allows; 1 px tall, so it stays tiny.
+    fn wide_png(width: u32) -> Vec<u8> {
+        use xcap::image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png).write_image(&vec![0; width as usize], width, 1, ExtendedColorType::L8).unwrap();
+        png
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn oversized_images_are_refused_from_their_header() {
+        let png = wide_png(40_000);
+        assert_eq!(native::header_size(&png), Some((40_000, 1)), "read from the header");
+        let error = prepare(png, &ALL, "no").unwrap_err();
+        assert!(error.contains("demasiado grande"), "{error}");
     }
 
     #[test]

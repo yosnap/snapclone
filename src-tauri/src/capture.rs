@@ -21,8 +21,9 @@ const READY_EVENT: &str = "capture-ready";
 const FAILED_EVENT: &str = "capture-failed";
 /// `capture://localhost/thumbnail/<id>` serves the small preview of a capture.
 const THUMBNAIL_PREFIX: &str = "thumbnail/";
-/// `capture://localhost/wallpaper` serves the current desktop picture; capture ids are UUIDs.
-const WALLPAPER_PATH: &str = "wallpaper";
+/// Sent with every `capture://localhost/wallpaper…` response, so the editor can tell when
+/// the desktop picture changed. Capture ids are UUIDs, so they never clash with those paths.
+const WALLPAPER_VERSION_HEADER: &str = "X-Wallpaper-Version";
 
 /// Captured files by id, served to the editor through the `capture://` scheme.
 #[derive(Default)]
@@ -327,18 +328,28 @@ pub fn png_scale(png: &[u8]) -> f64 {
 /// Failures carry a plain-text reason the editor can show.
 pub fn serve(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
     let requested = request.uri().path().trim_start_matches('/');
-    let served = if requested == WALLPAPER_PATH {
-        wallpaper::read(app)
-    } else {
-        let path = match requested.strip_prefix(THUMBNAIL_PREFIX) {
-            Some(id) => path_of(app, id).map(|path| thumbnail_or_capture(&path)),
-            None => path_of(app, requested),
-        };
-        path.and_then(|path| std::fs::read(path).ok()).map(|bytes| (bytes, "image/png")).ok_or_else(|| "unknown capture".to_string())
+    let served = match wallpaper::Variant::from_path(requested) {
+        Some(variant) => wallpaper::serve(app, variant).map(|(bytes, kind, version)| (bytes, kind, Some(version))),
+        None => {
+            let path = match requested.strip_prefix(THUMBNAIL_PREFIX) {
+                Some(id) => path_of(app, id).map(|path| thumbnail_or_capture(&path)),
+                None => path_of(app, requested),
+            };
+            path.and_then(|path| std::fs::read(path).ok())
+                .map(|bytes| (bytes, "image/png", None))
+                .ok_or_else(|| "unknown capture".to_string())
+        }
     };
-    let response = http::Response::builder().header("Access-Control-Allow-Origin", "*");
+    let response = http::Response::builder()
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Expose-Headers", WALLPAPER_VERSION_HEADER);
     match served {
-        Ok((bytes, kind)) => response.header("Content-Type", kind).body(bytes),
+        Ok((bytes, kind, version)) => match version {
+            Some(version) => response.header(WALLPAPER_VERSION_HEADER, version),
+            None => response,
+        }
+        .header("Content-Type", kind)
+        .body(bytes),
         Err(reason) => response.status(404).header("Content-Type", "text/plain; charset=utf-8").body(reason.into_bytes()),
     }
     .expect("static response parts are valid")

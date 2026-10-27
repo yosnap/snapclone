@@ -7,7 +7,6 @@ import {
   WALLPAPER_BACKGROUND,
   backgroundPreviewCss,
 } from "./style";
-import { refreshWallpaper } from "./wallpaper";
 
 const RATIO_LABELS: Record<Ratio, string> = {
   auto: "Automática",
@@ -26,8 +25,13 @@ const NUMERIC_KEYS: NumericKey[] = ["padding", "radius", "shadow"];
  * Returns a function that redraws the controls from `style`, for changes made elsewhere
  * (a preset, a restored capture).
  */
-export function bindControls(root: HTMLElement, style: Style, onChange: () => void): () => void {
-  const refreshBackgrounds = bindBackgrounds(root, style, onChange);
+export function bindControls(
+  root: HTMLElement,
+  style: Style,
+  onChange: () => void,
+  onWallpaperPicked: () => void,
+): () => void {
+  const refreshBackgrounds = bindBackgrounds(root, style, onChange, onWallpaperPicked);
 
   const numeric = NUMERIC_KEYS.map((key) => {
     const input = root.querySelector<HTMLInputElement>(`input[name="${key}"]`)!;
@@ -66,7 +70,13 @@ export function bindControls(root: HTMLElement, style: Style, onChange: () => vo
   return refresh;
 }
 
-function bindBackgrounds(root: HTMLElement, style: Style, onChange: () => void): () => void {
+/** `onWallpaperPicked` runs on every click of the wallpaper swatch, so it is read afresh. */
+function bindBackgrounds(
+  root: HTMLElement,
+  style: Style,
+  onChange: () => void,
+  onWallpaperPicked: () => void,
+): () => void {
   const swatches = root.querySelector<HTMLElement>("#background-swatches")!;
   const solid = root.querySelector<HTMLInputElement>("#solid-color")!;
   const file = root.querySelector<HTMLInputElement>("#background-file")!;
@@ -105,8 +115,8 @@ function bindBackgrounds(root: HTMLElement, style: Style, onChange: () => void):
   // Shown while the picture loads, or if macOS gives none.
   wallpaper.style.backgroundColor = "var(--checker)";
   wallpaper.addEventListener("click", () => {
-    refreshWallpaper();
     select(WALLPAPER_BACKGROUND);
+    onWallpaperPicked();
   });
   swatches.append(wallpaper);
 

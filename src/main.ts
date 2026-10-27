@@ -26,7 +26,7 @@ import { SettingsView } from "./settings-view";
 import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
 import { TextView } from "./text-view";
-import { ensureWallpaper } from "./wallpaper";
+import { requestWallpaper, wallpaperError } from "./wallpaper";
 
 type CaptureReady = { id: string; scale: number };
 
@@ -114,7 +114,6 @@ function currentDocument(): CaptureDocument {
 
 function scheduleRender(): void {
   if (!capture || renderQueued) return;
-  if (style.background.kind === "wallpaper") ensureWallpaper(wallpaperLoaded);
   renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
@@ -124,10 +123,16 @@ function scheduleRender(): void {
   });
 }
 
-/** The default gradient stands in when macOS gives no usable desktop picture. */
-function wallpaperLoaded(error: string | null): void {
-  if (error === null) scheduleRender();
-  else showStatus(`No se pudo usar el fondo de escritorio (${error}); se muestra el degradado por defecto`, true);
+/**
+ * Loads the desktop picture, or reloads it if it changed, when the style uses it. Asked for
+ * on opening a capture and on picking the swatch; the default gradient stands in until it
+ * arrives, or if macOS gives none.
+ */
+function requireWallpaper(): void {
+  if (style.background.kind !== "wallpaper") return;
+  requestWallpaper().then(scheduleRender, (error) =>
+    showStatus(`No se pudo usar el fondo de escritorio (${wallpaperError(error)}); se muestra el degradado por defecto`, true),
+  );
 }
 
 /** Opens a capture; `saved` restores the style and annotations it had in the history. */
@@ -162,6 +167,7 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
     editor.load(saved.annotations);
     editor.translate(shift.x - saved.shift.x, shift.y - saved.shift.y);
   }
+  requireWallpaper();
   // Skip Vision entirely while every category is off; enabling one runs it on demand.
   if (Object.values(redactSettings).some(Boolean)) runAutoRedaction(id);
   scheduleRender();
@@ -306,6 +312,15 @@ async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string 
   }
   exporting = true;
   try {
+    // Never export the stand-in gradient: wait for the picture, or say why there is none.
+    if (style.background.kind === "wallpaper") {
+      try {
+        await requestWallpaper();
+      } catch (error) {
+        showStatus(`No se ha exportado: el fondo de escritorio no está disponible (${wallpaperError(error)})`, true);
+        return;
+      }
+    }
     render(canvas, capture, style, editor.overlay(false));
     const message = await action(canvas);
     if (message) showStatus(message);
@@ -348,13 +363,14 @@ async function init(): Promise<void> {
   Object.assign(redactSettings, settings.redact);
   editor.setColor(settings.annotationColor);
 
-  refreshControls = bindControls(sidebar, style, styleChanged);
+  refreshControls = bindControls(sidebar, style, styleChanged, requireWallpaper);
   bindPresets(sidebar.querySelector<HTMLElement>("#presets")!, settings.presets, {
     current: () => toStoredStyle(style),
     apply: (stored) => {
       applyStoredStyle(style, stored);
       refreshControls();
       styleChanged();
+      requireWallpaper();
     },
     persist: (presets) => saveSetting("presets", presets),
     notify: (message) => showStatus(message),
