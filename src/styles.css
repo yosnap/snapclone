@@ -232,6 +232,25 @@ input[type="text"] {
   font: inherit;
 }
 
+.presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preset-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.preset-actions button {
+  flex: 1;
+}
+
+button.compact {
+  padding: 4px 10px;
+}
+
 .checks {
   display: flex;
   flex-direction: column;

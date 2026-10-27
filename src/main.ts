@@ -12,7 +12,10 @@ import {
 } from "./auto-redact";
 import { bindControls } from "./controls";
 import { copyToClipboard, saveToFile } from "./export";
+import { applyStoredStyle, toStoredStyle } from "./persisted-style";
+import { bindPresets } from "./presets";
 import { type Capture, layout, render } from "./render";
+import { loadSettings, saveSetting } from "./settings";
 import { defaultStyle } from "./style";
 
 type CaptureReady = { id: string; scale: number };
@@ -129,6 +132,7 @@ async function runAutoRedaction(id: string): Promise<void> {
 }
 
 function toggleRedaction(category: RedactCategory, enabled: boolean): void {
+  saveSetting("redact", { ...redactSettings });
   if (!capture || !captureId) return;
   if (!enabled) {
     editor.removeAutoRedactions(category);
@@ -178,16 +182,41 @@ function startCapture(): void {
   invoke("start_capture").catch((error) => showStatus(`No se pudo capturar: ${error}`, true));
 }
 
-bindControls(sidebar, style, scheduleRender);
-bindRedactControls(sidebar.querySelector<HTMLElement>("#redact-options")!, redactSettings, toggleRedaction);
-buildToolbar();
-
-// The Vite dev server is reachable from any browser, but only the Tauri window has the Rust bridge.
-const outsideTauri = !isTauri();
-if (outsideTauri) {
-  document.querySelectorAll<HTMLButtonElement>("button").forEach((button) => (button.disabled = true));
-  showStatus("Esto es la vista web en un navegador. Usa la ventana de Snapclone que abre «npm run tauri dev».", true);
+function styleChanged(): void {
+  scheduleRender();
+  saveSetting("style", toStoredStyle(style));
 }
+
+/** Restores the last session's choices before wiring the controls, so they start in sync. */
+async function init(): Promise<void> {
+  const settings = await loadSettings();
+  applyStoredStyle(style, settings.style);
+  Object.assign(redactSettings, settings.redact);
+  editor.setColor(settings.annotationColor);
+
+  const refreshControls = bindControls(sidebar, style, styleChanged);
+  bindPresets(sidebar.querySelector<HTMLElement>("#presets")!, settings.presets, {
+    current: () => toStoredStyle(style),
+    apply: (stored) => {
+      applyStoredStyle(style, stored);
+      refreshControls();
+      styleChanged();
+    },
+    persist: (presets) => saveSetting("presets", presets),
+    notify: (message) => showStatus(message),
+  });
+  bindRedactControls(sidebar.querySelector<HTMLElement>("#redact-options")!, redactSettings, toggleRedaction);
+  buildToolbar();
+
+  // The Vite dev server is reachable from any browser, but only the Tauri window has the Rust bridge.
+  if (outsideTauri) {
+    document.querySelectorAll<HTMLButtonElement>("button").forEach((button) => (button.disabled = true));
+    showStatus("Esto es la vista web en un navegador. Usa la ventana de Snapclone que abre «npm run tauri dev».", true);
+  }
+}
+
+const outsideTauri = !isTauri();
+init().catch((error) => showStatus(`No se pudo iniciar el editor: ${error}`, true));
 
 document.querySelectorAll<HTMLButtonElement>("[data-action=capture]").forEach((button) => {
   button.addEventListener("click", startCapture);
@@ -233,7 +262,10 @@ function buildToolbar(): void {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
     if (!button) return;
     if (button.dataset.tool) editor.setTool(button.dataset.tool as Tool);
-    else if (button.dataset.color) editor.setColor(button.dataset.color);
+    else if (button.dataset.color) {
+      editor.setColor(button.dataset.color);
+      saveSetting("annotationColor", editor.color);
+    }
     else if (button.dataset.history === "undo") editor.undo();
     else if (button.dataset.history === "redo") editor.redo();
     syncToolbar();

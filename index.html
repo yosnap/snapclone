@@ -70,6 +70,16 @@
           <input type="text" name="watermark" placeholder="@tu_usuario" />
         </label>
 
+        <fieldset id="presets" class="presets">
+          <legend>Presets</legend>
+          <select id="preset-select" aria-label="Preset guardado"></select>
+          <input type="text" id="preset-name" placeholder="Nombre del preset" aria-label="Nombre del preset" />
+          <div class="preset-actions">
+            <button type="button" id="preset-save" class="secondary compact">Guardar</button>
+            <button type="button" id="preset-delete" class="secondary compact">Borrar</button>
+          </div>
+        </fieldset>
+
         <fieldset>
           <legend>Tachar automáticamente</legend>
           <div id="redact-options" class="checks"></div>

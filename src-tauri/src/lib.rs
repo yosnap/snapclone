@@ -11,6 +11,7 @@ pub fn run() {
     let capture_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit2);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::new().build())
         .manage(capture::Captures::default())
         .manage(export::PendingSave::default())
         .plugin(tauri_plugin_dialog::init())
