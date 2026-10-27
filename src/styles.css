@@ -1,0 +1,77 @@
+:root {
+  --bg: #f4f4f5;
+  --fg: #18181b;
+  --muted: #71717a;
+  --accent: #2563eb;
+  --accent-fg: #ffffff;
+  --kbd-bg: #ffffff;
+  --kbd-border: #d4d4d8;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18181b;
+    --fg: #f4f4f5;
+    --muted: #a1a1aa;
+    --kbd-bg: #27272a;
+    --kbd-border: #3f3f46;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+}
+
+.editor {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--muted);
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 2px 6px;
+  margin: 0 2px;
+  border: 1px solid var(--kbd-border);
+  border-radius: 6px;
+  background: var(--kbd-bg);
+  color: var(--fg);
+  font-family: inherit;
+}
+
+button {
+  margin-top: 12px;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+#editor-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+[hidden] {
+  display: none !important;
+}

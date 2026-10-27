@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Snapclone</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="editor">
+      <section id="empty-state" class="empty-state">
+        <p>Pulsa <kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd> o usa el icono de la barra de menús.</p>
+        <button id="capture-button" type="button">Capturar región</button>
+      </section>
+      <canvas id="editor-canvas" hidden></canvas>
+    </main>
+  </body>
+</html>
