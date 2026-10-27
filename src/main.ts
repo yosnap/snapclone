@@ -26,7 +26,15 @@ let exporting = false;
 const editor = new AnnotationEditor(
   canvas,
   textEntry,
-  () => (capture ? { layout: layout(capture, style), scale: capture.scale } : null),
+  () =>
+    capture
+      ? {
+          layout: layout(capture, style),
+          scale: capture.scale,
+          imageWidth: capture.image.naturalWidth,
+          imageHeight: capture.image.naturalHeight,
+        }
+      : null,
   () => {
     syncToolbar();
     scheduleRender();
@@ -38,7 +46,9 @@ function scheduleRender(): void {
   renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
-    if (capture) render(canvas, capture, style, editor.overlay(true));
+    if (!capture) return;
+    render(canvas, capture, style, editor.overlay(true));
+    editor.syncTextEntry();
   });
 }
 

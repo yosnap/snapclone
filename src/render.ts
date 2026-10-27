@@ -1,4 +1,4 @@
-import { type Annotation, drawAnnotations, drawSelection } from "./annotations";
+import { type Annotation, FONT_STACK, drawAnnotations, drawSelection } from "./annotations";
 import { type Background, type Style, ratioValue } from "./style";
 
 export type Capture = { image: HTMLImageElement; scale: number };
@@ -36,25 +36,13 @@ export function layout(capture: Capture, style: Style): Layout {
  */
 export function render(canvas: HTMLCanvasElement, capture: Capture, style: Style, overlay: Overlay): void {
   const { image, scale } = capture;
-  const { width, height, x, y, radius } = layout(capture, style);
+  const frame = layout(capture, style);
+  const { x, y, radius } = frame;
 
-  resize(canvas, width, height);
+  resize(canvas, frame.width, frame.height);
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  paintBackground(ctx, style.background, canvas.width, canvas.height);
-
-  // Drawing the already-rounded capture with a shadow makes the shadow follow its alpha,
-  // so transparent pixels (window captures) never reveal a solid backing shape.
-  const rounded = roundedCapture(image, radius);
-  ctx.save();
-  if (style.shadow > 0) {
-    ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
-    ctx.shadowBlur = style.shadow * scale;
-    ctx.shadowOffsetY = style.shadow * scale * 0.4;
-  }
-  ctx.drawImage(rounded, x, y);
-  ctx.restore();
+  ctx.drawImage(baseLayer(capture, style, frame), 0, 0);
 
   ctx.save();
   roundedRect(ctx, x, y, image.naturalWidth, image.naturalHeight, radius);
@@ -69,10 +57,61 @@ export function render(canvas: HTMLCanvasElement, capture: Capture, style: Style
     drawSelection(ctx, overlay.selected, scale);
     ctx.restore();
   }
+}
+
+const base = { canvas: document.createElement("canvas"), key: "" };
+const objectIds = new WeakMap<object, number>();
+let nextObjectId = 0;
+
+function objectId(value: object): number {
+  let id = objectIds.get(value);
+  if (id === undefined) {
+    id = nextObjectId++;
+    objectIds.set(value, id);
+  }
+  return id;
+}
+
+/**
+ * Background, shadowed capture and watermark only change with the style or the capture,
+ * so they are cached and annotation drags only repaint what sits on top.
+ */
+function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasElement {
+  const key = [
+    objectId(capture.image),
+    capture.scale,
+    objectId(style.background),
+    style.padding,
+    style.radius,
+    style.shadow,
+    style.ratio,
+    style.watermark,
+  ].join("|");
+  if (key === base.key) return base.canvas;
+
+  const { image, scale } = capture;
+  resize(base.canvas, frame.width, frame.height);
+  const ctx = base.canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, frame.width, frame.height);
+  paintBackground(ctx, style.background, frame.width, frame.height);
+
+  // Drawing the already-rounded capture with a shadow makes the shadow follow its alpha,
+  // so transparent pixels (window captures) never reveal a solid backing shape.
+  const rounded = roundedCapture(image, frame.radius);
+  ctx.save();
+  if (style.shadow > 0) {
+    ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+    ctx.shadowBlur = style.shadow * scale;
+    ctx.shadowOffsetY = style.shadow * scale * 0.4;
+  }
+  ctx.drawImage(rounded, frame.x, frame.y);
+  ctx.restore();
 
   if (style.watermark.trim()) {
-    paintWatermark(ctx, style.watermark.trim(), x + image.naturalWidth, y + image.naturalHeight, scale);
+    paintWatermark(ctx, style.watermark.trim(), frame.x + image.naturalWidth, frame.y + image.naturalHeight, scale);
   }
+  base.key = key;
+  return base.canvas;
 }
 
 const roundedLayer = document.createElement("canvas");
@@ -154,7 +193,7 @@ function paintWatermark(ctx: CanvasRenderingContext2D, text: string, right: numb
   const fontSize = WATERMARK_FONT_SIZE * scale;
   const baseline = Math.min(bottom + (WATERMARK_GAP + WATERMARK_FONT_SIZE) * scale, ctx.canvas.height - 4 * scale);
   ctx.save();
-  ctx.font = `400 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  ctx.font = `400 ${fontSize}px ${FONT_STACK}`;
   ctx.textAlign = "right";
   ctx.globalAlpha = 0.8;
   ctx.shadowColor = "#000";

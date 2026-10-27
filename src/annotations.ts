@@ -20,10 +20,12 @@ const STROKE_WIDTH = 4;
 export const TEXT_SIZE = 28;
 const PIXEL_BLOCK = 10;
 const HIT_TOLERANCE = 8;
-const TEXT_FONT = '600 {size}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+/** Shared by canvas text, the floating text input and the watermark so they always match. */
+export const FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+export const FONT_WEIGHT = 600;
 
 export function textFont(scale: number): string {
-  return TEXT_FONT.replace("{size}", String(TEXT_SIZE * scale));
+  return `${FONT_WEIGHT} ${TEXT_SIZE * scale}px ${FONT_STACK}`;
 }
 
 export function boxFromPoints(a: Point, b: Point): Box {

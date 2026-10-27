@@ -2,6 +2,8 @@ import {
   ANNOTATION_COLORS,
   type Annotation,
   type AnnotationKind,
+  FONT_STACK,
+  FONT_WEIGHT,
   type Point,
   TEXT_SIZE,
   boxFromPoints,
@@ -17,11 +19,14 @@ const TOOL_KEYS: Record<string, Tool> = { v: "select", a: "arrow", r: "rect", t:
 const MIN_SHAPE_SIZE = 4;
 const HISTORY_LIMIT = 100;
 
-type Geometry = { layout: Layout; scale: number };
+export type Geometry = { layout: Layout; scale: number; imageWidth: number; imageHeight: number };
 
 type Drag =
   | { mode: "move"; start: Point; original: Annotation; before: Annotation[]; changed: boolean }
   | { mode: "create"; start: Point };
+
+/** Where the bitmap is drawn inside the canvas element, honouring `object-fit: contain`. */
+type ContentRect = { left: number; top: number; cssPerPixel: number };
 
 /**
  * Owns the annotation list, the active tool and undo/redo. Pointer input on the canvas
@@ -36,6 +41,7 @@ export class AnnotationEditor {
   private drag: Drag | null = null;
   private undoStack: Annotation[][] = [];
   private redoStack: Annotation[][] = [];
+  private textAnchor: Point | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -47,8 +53,11 @@ export class AnnotationEditor {
     canvas.addEventListener("pointermove", (event) => this.pointerMove(event));
     canvas.addEventListener("pointerup", (event) => this.pointerUp(event));
     canvas.addEventListener("pointercancel", () => this.cancelDrag());
+    textEntry.style.fontFamily = FONT_STACK;
+    textEntry.style.fontWeight = String(FONT_WEIGHT);
     textEntry.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") this.commitText();
+      // Enter also confirms IME and accent-picker candidates; let those finish first.
+      if (event.key === "Enter" && !event.isComposing) this.commitText();
       if (event.key === "Escape") this.closeTextEntry();
       event.stopPropagation();
     });
@@ -114,6 +123,8 @@ export class AnnotationEditor {
 
   /** Handles editor shortcuts; returns true when the event was consumed. */
   handleKey(event: KeyboardEvent): boolean {
+    // Mid-drag edits would commit a stale snapshot or change the draft's kind.
+    if (this.drag) return false;
     const key = event.key.toLowerCase();
     if (event.metaKey && key === "z") {
       if (event.shiftKey) this.redo();
@@ -138,6 +149,17 @@ export class AnnotationEditor {
     return false;
   }
 
+  /** Keeps the floating text input over its anchor after the layout changes. Call after rendering. */
+  syncTextEntry(): void {
+    const geometry = this.geometry();
+    if (this.textEntry.hidden || !this.textAnchor || !geometry) return;
+    const content = this.contentRect();
+    const { layout, scale } = geometry;
+    this.textEntry.style.left = `${content.left + (layout.x + this.textAnchor.x) * content.cssPerPixel}px`;
+    this.textEntry.style.top = `${content.top + (layout.y + this.textAnchor.y) * content.cssPerPixel}px`;
+    this.textEntry.style.fontSize = `${TEXT_SIZE * scale * content.cssPerPixel}px`;
+  }
+
   /** Replaces the list as one undoable step. Every mutation goes through here. */
   private commit(next: Annotation[], before: Annotation[] = this.annotations): void {
     this.undoStack.push(before);
@@ -152,49 +174,80 @@ export class AnnotationEditor {
     this.onChange();
   }
 
-  private toCapturePoint(event: PointerEvent): (Point & Geometry) | null {
-    const geometry = this.geometry();
-    if (!geometry) return null;
+  private contentRect(): ContentRect {
     const rect = this.canvas.getBoundingClientRect();
+    const cssPerPixel = Math.min(rect.width / this.canvas.width, rect.height / this.canvas.height);
     return {
-      ...geometry,
-      x: ((event.clientX - rect.left) * this.canvas.width) / rect.width - geometry.layout.x,
-      y: ((event.clientY - rect.top) * this.canvas.height) / rect.height - geometry.layout.y,
+      left: rect.left + (rect.width - this.canvas.width * cssPerPixel) / 2,
+      top: rect.top + (rect.height - this.canvas.height * cssPerPixel) / 2,
+      cssPerPixel,
+    };
+  }
+
+  private toCapturePoint(event: PointerEvent, geometry: Geometry): Point {
+    const content = this.contentRect();
+    return {
+      x: (event.clientX - content.left) / content.cssPerPixel - geometry.layout.x,
+      y: (event.clientY - content.top) / content.cssPerPixel - geometry.layout.y,
+    };
+  }
+
+  /** Annotations live on the capture; anything placed in the padding would be clipped away. */
+  private isInside(point: Point, geometry: Geometry): boolean {
+    return point.x >= 0 && point.y >= 0 && point.x <= geometry.imageWidth && point.y <= geometry.imageHeight;
+  }
+
+  private clampToCapture(point: Point, geometry: Geometry): Point {
+    return {
+      x: Math.min(Math.max(point.x, 0), geometry.imageWidth),
+      y: Math.min(Math.max(point.y, 0), geometry.imageHeight),
     };
   }
 
   private pointerDown(event: PointerEvent): void {
     if (event.button !== 0) return;
-    const point = this.toCapturePoint(event);
-    if (!point) return;
+    const geometry = this.geometry();
+    if (!geometry) return;
+    const point = this.toCapturePoint(event, geometry);
+    const inside = this.isInside(point, geometry);
 
     if (this.tool === "text") {
-      this.openTextEntry(point, event, point.scale);
+      event.preventDefault();
+      if (!this.textEntry.hidden) this.commitText();
+      if (inside) this.openTextEntry(point);
       return;
     }
 
-    this.canvas.setPointerCapture(event.pointerId);
     if (this.tool === "select") {
-      const hit = hitTest(this.annotations, point, point.scale);
+      const hit = inside ? hitTest(this.annotations, point, geometry.scale) : undefined;
       this.selectedId = hit?.id ?? null;
-      this.drag = hit ? { mode: "move", start: point, original: hit, before: this.annotations, changed: false } : null;
+      if (hit) {
+        this.canvas.setPointerCapture(event.pointerId);
+        this.drag = { mode: "move", start: point, original: hit, before: this.annotations, changed: false };
+      }
       this.onChange();
       return;
     }
 
+    if (!inside) return;
+    this.canvas.setPointerCapture(event.pointerId);
     this.drag = { mode: "create", start: point };
     this.draft = this.shapeFrom(point, point);
     this.onChange();
   }
 
   private pointerMove(event: PointerEvent): void {
-    if (!this.drag) return;
-    const point = this.toCapturePoint(event);
-    if (!point) return;
+    const geometry = this.geometry();
+    if (!this.drag || !geometry) return;
+    const point = this.clampToCapture(this.toCapturePoint(event, geometry), geometry);
 
     if (this.drag.mode === "move") {
       const { original, start } = this.drag;
-      const shifted = moved(original, point.x - start.x, point.y - start.y);
+      const dx = point.x - start.x;
+      const dy = point.y - start.y;
+      // Sub-pixel jitter during a click must not create an undo step.
+      if (!this.drag.changed && Math.hypot(dx, dy) < 1) return;
+      const shifted = moved(original, dx, dy);
       this.annotations = this.annotations.map((item) => (item.id === original.id ? shifted : item));
       this.drag.changed = true;
     } else {
@@ -236,7 +289,7 @@ export class AnnotationEditor {
     const id = this.draft?.id ?? crypto.randomUUID();
     switch (this.tool) {
       case "arrow":
-        return { id, kind: "arrow", color: this.color, from: { x: start.x, y: start.y }, to: { x: end.x, y: end.y } };
+        return { id, kind: "arrow", color: this.color, from: { ...start }, to: { ...end } };
       case "pixelate":
         return { id, kind: "pixelate", ...boxFromPoints(start, end) };
       default:
@@ -244,27 +297,21 @@ export class AnnotationEditor {
     }
   }
 
+  /** Drafts are only arrows and boxes; text is created through the input instead. */
   private isLargeEnough(annotation: Annotation, scale: number): boolean {
     const minimum = MIN_SHAPE_SIZE * scale;
     if (annotation.kind === "arrow") {
       return Math.hypot(annotation.to.x - annotation.from.x, annotation.to.y - annotation.from.y) >= minimum;
     }
-    return annotation.kind === "text" || (annotation.width >= minimum && annotation.height >= minimum);
+    return "width" in annotation && annotation.width >= minimum && annotation.height >= minimum;
   }
 
-  private textAnchor: Point | null = null;
-
-  /** Places a native input over the canvas, sized to match the rendered text. */
-  private openTextEntry(point: Point, event: PointerEvent, scale: number): void {
-    event.preventDefault();
-    const pixelsPerCssPixel = this.canvas.width / this.canvas.getBoundingClientRect().width;
-    this.textAnchor = { x: point.x, y: point.y };
+  private openTextEntry(point: Point): void {
+    this.textAnchor = point;
     this.textEntry.value = "";
-    this.textEntry.style.left = `${event.clientX}px`;
-    this.textEntry.style.top = `${event.clientY}px`;
     this.textEntry.style.color = this.color;
-    this.textEntry.style.fontSize = `${(TEXT_SIZE * scale) / pixelsPerCssPixel}px`;
     this.textEntry.hidden = false;
+    this.syncTextEntry();
     requestAnimationFrame(() => this.textEntry.focus());
   }
 
