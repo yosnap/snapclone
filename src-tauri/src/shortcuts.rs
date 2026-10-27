@@ -60,6 +60,8 @@ struct Registry {
 #[derive(Clone, Serialize)]
 pub struct ShortcutEntry {
     kind: CaptureKind,
+    /// The capture kind as the user reads it, from `CaptureKind::label`.
+    name: &'static str,
     /// Stored form, e.g. `Shift+Cmd+Digit2`, which the menu also takes as its accelerator.
     pub shortcut: Option<String>,
     /// As macOS shows it, e.g. `⇧⌘2`.
@@ -125,13 +127,13 @@ fn key_label(key: Code) -> String {
     symbol.to_string()
 }
 
-/// Parses a shortcut from the settings file or the recorder. It must have a modifier, since
-/// a bare key registered globally would stop working in every other app.
+/// Parses a shortcut from the settings file or the recorder. It must have ⌘, ⌥ or ⌃: a bare
+/// key, or one with only ⇧ (which just types a capital or a symbol), registered globally
+/// would stop working for typing in every other app.
 pub fn parse(text: &str) -> Result<Shortcut, String> {
     let shortcut = Shortcut::from_str(text).map_err(|_| "Esa tecla no se puede usar en un atajo".to_string())?;
-    let modifiers = MODIFIERS.iter().fold(Modifiers::empty(), |all, (modifier, ..)| all | *modifier);
-    if !shortcut.mods.intersects(modifiers) {
-        return Err("El atajo debe llevar al menos un modificador (⌘, ⌥, ⌃ o ⇧)".into());
+    if !shortcut.mods.intersects(Modifiers::SUPER | Modifiers::ALT | Modifiers::CONTROL) {
+        return Err("El atajo debe llevar ⌘, ⌥ o ⌃ (⇧ solo no basta)".into());
     }
     Ok(shortcut)
 }
@@ -198,6 +200,7 @@ fn entries(registry: &Registry) -> Vec<ShortcutEntry> {
             let shortcut = registry.assigned.get(&kind).copied().flatten();
             ShortcutEntry {
                 kind,
+                name: kind.label(),
                 shortcut: shortcut.as_ref().map(canonical),
                 label: shortcut.as_ref().map(label),
                 error: registry.failed.get(&kind).cloned(),
@@ -340,7 +343,9 @@ mod tests {
     fn shortcuts_need_a_modifier_and_a_known_key() {
         assert!(parse("KeyA").is_err());
         assert!(parse("Cmd+Shift+NotAKey").is_err());
-        assert!(parse("Shift+KeyA").is_ok());
+        assert!(parse("Shift+KeyA").is_err());
+        assert!(parse("Alt+KeyA").is_ok());
+        assert!(parse("Ctrl+Shift+KeyA").is_ok());
     }
 
     #[test]

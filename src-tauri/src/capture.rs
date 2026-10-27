@@ -91,27 +91,43 @@ impl CaptureKind {
 /// Without Screen Recording permission CoreGraphics still "succeeds" but returns only the
 /// wallpaper, so the permission is checked up front. When it is missing, macOS is asked to
 /// prompt for it and the caller falls back to `screencapture`, which handles its own prompt.
-#[cfg(target_os = "macos")]
 pub fn screen_capture_allowed() -> bool {
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGPreflightScreenCaptureAccess() -> bool;
-        fn CGRequestScreenCaptureAccess() -> bool;
+    if has_screen_capture_permission() {
+        return true;
     }
-    // SAFETY: both functions take no arguments and only query or prompt for the permission.
-    unsafe {
-        if CGPreflightScreenCaptureAccess() {
-            return true;
-        }
-        CGRequestScreenCaptureAccess();
-    }
+    request_screen_capture_permission();
     false
 }
 
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+/// Only asks whether the permission is granted; never prompts.
+#[cfg(target_os = "macos")]
+fn has_screen_capture_permission() -> bool {
+    // SAFETY: takes no arguments and only queries the permission.
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+#[cfg(target_os = "macos")]
+fn request_screen_capture_permission() {
+    // SAFETY: takes no arguments and only shows the system prompt.
+    unsafe {
+        CGRequestScreenCaptureAccess();
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
-pub fn screen_capture_allowed() -> bool {
+fn has_screen_capture_permission() -> bool {
     true
 }
+
+#[cfg(not(target_os = "macos"))]
+fn request_screen_capture_permission() {}
 
 /// Path of a capture taken in this session or stored in the history, if the id is known.
 /// Paths only ever come from Rust, never from the webview.
@@ -175,8 +191,15 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
             captures.in_progress.store(false, Ordering::SeqCst);
             return;
         }
+        // No system tool can take a scroll capture, so its failure is shown as it is; only a
+        // missing permission (checked, not assumed) gets its own explanation.
         Err(error) if kind == CaptureKind::Scroll => {
-            report_failure(&app, &format!("La captura con scroll necesita el permiso de Grabación de pantalla ({error})"));
+            let message = if has_screen_capture_permission() {
+                format!("No se pudo empezar la captura con scroll: {error}")
+            } else {
+                "La captura con scroll necesita el permiso de Grabación de pantalla. Actívalo en Ajustes del Sistema › Privacidad y seguridad.".to_string()
+            };
+            report_failure(&app, &message);
             captures.in_progress.store(false, Ordering::SeqCst);
             return;
         }

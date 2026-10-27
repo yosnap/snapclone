@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ShortcutSettings } from "./shortcut-settings";
+import { type ShortcutEntry, ShortcutSettings } from "./shortcut-settings";
 
 /**
  * In-window settings overlay. These settings belong to the app rather than the editor, so
@@ -9,10 +9,12 @@ export class SettingsView {
   private readonly root = document.querySelector<HTMLElement>("#settings")!;
   private readonly dockHidden = document.querySelector<HTMLInputElement>("#dock-hidden")!;
   private readonly status = document.querySelector<HTMLElement>("#settings-status")!;
-  private readonly shortcuts = new ShortcutSettings(document.querySelector<HTMLUListElement>("#shortcut-list")!);
+  private readonly shortcuts: ShortcutSettings;
   private returnFocus: HTMLElement | null = null;
 
-  constructor() {
+  /** `shortcutsChanged` gets the shortcut list whenever the settings show or change it. */
+  constructor(shortcutsChanged: (entries: ShortcutEntry[]) => void) {
+    this.shortcuts = new ShortcutSettings(document.querySelector<HTMLUListElement>("#shortcut-list")!, shortcutsChanged);
     document.querySelector<HTMLButtonElement>("#settings-close")!.addEventListener("click", () => this.close());
     this.root.addEventListener("click", (event) => {
       if (event.target === this.root) this.close();

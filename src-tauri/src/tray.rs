@@ -17,13 +17,9 @@ const CAPTURE_PREFIX: &str = "capture-";
 /// The capture entries, kept so their shortcuts can be updated when they change.
 struct CaptureItems(Vec<(CaptureKind, MenuItem<Wry>)>);
 
-fn capture_title(kind: CaptureKind) -> &'static str {
-    match kind {
-        CaptureKind::Region => "Capturar zona",
-        CaptureKind::Window => "Capturar ventana",
-        CaptureKind::Screen => "Capturar pantalla completa",
-        CaptureKind::Scroll => "Capturar con scroll",
-    }
+/// "Capturar zona", "Capturar con scroll"…, from the one name each kind has.
+fn capture_title(kind: CaptureKind) -> String {
+    format!("Capturar {}", kind.label().to_lowercase())
 }
 
 pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> {

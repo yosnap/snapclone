@@ -21,6 +21,7 @@ import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
 import { loadSettings, saveSetting } from "./settings";
 import { SettingsView } from "./settings-view";
+import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
 
 type CaptureReady = { id: string; scale: number };
@@ -375,7 +376,20 @@ const historyView = new HistoryView({
 });
 historyButton.addEventListener("click", () => historyView.show());
 
-const settingsView = new SettingsView();
+/** The empty editor names the zone shortcut as it is configured right now. */
+function showZoneShortcut(entries: ShortcutEntry[]): void {
+  const hint = document.querySelector<HTMLElement>("#empty-hint")!;
+  const zone = entries.find((entry) => entry.kind === "region");
+  if (!zone?.label) {
+    hint.textContent = "La captura de zona no tiene atajo: usa el botón o el icono de la barra de menús.";
+    return;
+  }
+  const key = document.createElement("kbd");
+  key.textContent = zone.label;
+  hint.replaceChildren("Pulsa ", key, " o usa el icono de la barra de menús.");
+}
+
+const settingsView = new SettingsView(showZoneShortcut);
 function openSettings(): void {
   historyView.close();
   settingsView.show().catch((error) => showStatus(`No se pudieron abrir los ajustes: ${error}`, true));
@@ -405,6 +419,9 @@ document.addEventListener("keydown", (event) => {
 });
 
 if (!outsideTauri) {
+  loadShortcuts()
+    .then(showZoneShortcut)
+    .catch((error) => console.error("shortcuts could not be read", error));
   listen<CaptureReady>("capture-ready", (event) => {
     historyView.close();
     settingsView.close();

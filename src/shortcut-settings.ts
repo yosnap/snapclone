@@ -2,15 +2,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { shortcutFromEvent } from "./shortcut-keys";
 
 type CaptureKind = "region" | "window" | "screen" | "scroll";
-/** As Rust reports it: `label` is the macOS rendering, `error` a failed registration. */
-type ShortcutEntry = { kind: CaptureKind; shortcut: string | null; label: string | null; error: string | null };
-
-const KIND_LABELS: Record<CaptureKind, string> = {
-  region: "Zona",
-  window: "Ventana",
-  screen: "Pantalla completa",
-  scroll: "Con scroll",
+/**
+ * As Rust reports it: `name` is the capture kind as the user reads it, `label` the shortcut
+ * as macOS shows it and `error` a failed registration.
+ */
+export type ShortcutEntry = {
+  kind: CaptureKind;
+  name: string;
+  shortcut: string | null;
+  label: string | null;
+  error: string | null;
 };
+
+export function loadShortcuts(): Promise<ShortcutEntry[]> {
+  return invoke<ShortcutEntry[]>("get_shortcuts");
+}
 const RECORDING_TEXT = "Pulsa la combinación…";
 const EMPTY_TEXT = "Sin atajo";
 
@@ -25,11 +31,15 @@ export class ShortcutSettings {
   private readonly attemptErrors = new Map<CaptureKind, string>();
   private recording: { kind: CaptureKind; button: HTMLButtonElement } | null = null;
 
-  constructor(private readonly list: HTMLUListElement) {}
+  /** `changed` hears about every shortcut list shown, so other views can follow it. */
+  constructor(
+    private readonly list: HTMLUListElement,
+    private readonly changed: (entries: ShortcutEntry[]) => void,
+  ) {}
 
   async load(): Promise<void> {
     this.attemptErrors.clear();
-    this.render(await invoke<ShortcutEntry[]>("get_shortcuts"));
+    this.render(await loadShortcuts());
   }
 
   /** Ends any recording without changing anything, e.g. when the settings close. */
@@ -39,6 +49,7 @@ export class ShortcutSettings {
 
   private render(entries: ShortcutEntry[]): void {
     this.entries = entries;
+    this.changed(entries);
     this.recording = null;
     this.list.replaceChildren(...entries.map((entry) => this.row(entry)));
   }
@@ -48,7 +59,7 @@ export class ShortcutSettings {
     row.className = "shortcut-row";
 
     const name = document.createElement("span");
-    name.textContent = KIND_LABELS[entry.kind];
+    name.textContent = entry.name;
     name.id = `shortcut-${entry.kind}`;
 
     const recorder = document.createElement("button");
@@ -68,7 +79,7 @@ export class ShortcutSettings {
     clear.type = "button";
     clear.className = "secondary compact";
     clear.textContent = "Borrar";
-    clear.title = `Quitar el atajo de «${KIND_LABELS[entry.kind]}»`;
+    clear.title = `Quitar el atajo de «${entry.name}»`;
     clear.disabled = entry.shortcut === null;
     clear.addEventListener("click", () => this.assign(entry.kind, null));
 
@@ -127,7 +138,7 @@ export class ShortcutSettings {
     } catch (error) {
       this.attemptErrors.set(kind, String(error));
       try {
-        this.render(await invoke<ShortcutEntry[]>("get_shortcuts"));
+        this.render(await loadShortcuts());
       } catch (reloadError) {
         console.error("shortcuts could not be reloaded", reloadError);
         this.render(this.entries);
