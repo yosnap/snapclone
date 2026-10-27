@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{http, AppHandle, Emitter, Manager};
 use xcap::image::RgbaImage;
 
-use crate::{editor_window, history, images, screen, selector, wallpaper};
+use crate::{
+    app_settings::{self, Toggle},
+    editor_window, history, images, screen, selector, wallpaper,
+};
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
 const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
@@ -168,12 +171,16 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
     // ordered out, which does not activate the app either. Every capture kind keeps this:
     // the selector shoots the monitors before opening its overlays (which the scroll capture
     // also starts from), and the full-screen capture shows the editor only after the shot.
-    let was_visible = editor_window::is_visible(&app);
-    // Ordered out even when it reports itself invisible: after ⌘H it still belongs on screen,
-    // and unhiding the app below would bring it back into the shot.
-    editor_window::hide(&app);
-    if was_visible {
-        tokio::time::sleep(HIDE_SETTLE).await;
+    // The user can keep Snapclone's windows in the shot ("Ocultar las ventanas al capturar").
+    if app_settings::toggle(&app, Toggle::HideWindowsOnCapture) {
+        let was_visible = editor_window::is_visible(&app) || app_settings::is_window_visible(&app);
+        // Ordered out even when it reports itself invisible: after ⌘H it still belongs on
+        // screen, and unhiding the app below would bring it back into the shot.
+        editor_window::hide(&app);
+        app_settings::hide_window(&app);
+        if was_visible {
+            tokio::time::sleep(HIDE_SETTLE).await;
+        }
     }
     // Every kind opens its overlays (or shows the editor) in a hidden app otherwise.
     editor_window::unhide_without_activation(&app);
@@ -219,6 +226,7 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
     match result {
         Ok(Some((id, path))) => {
             let scale = std::fs::read(&path).map_or(1.0, |bytes| png_scale(&bytes));
+            app_settings::play_capture_sound(&app);
             deliver(&app, id, path, scale);
         }
         Ok(None) => {}
@@ -280,6 +288,7 @@ pub async fn store_image(app: &AppHandle, image: RgbaImage, scale: f64) -> Resul
     tauri::async_runtime::spawn_blocking(move || images::write_png(&target, &image))
         .await
         .map_err(|error| error.to_string())??;
+    app_settings::play_capture_sound(app);
     deliver(app, id, path, scale);
     Ok(())
 }

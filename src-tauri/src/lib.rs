@@ -1,3 +1,4 @@
+mod app_settings;
 mod capture;
 #[cfg(target_os = "macos")]
 mod capture_below;
@@ -62,12 +63,17 @@ pub fn run() {
                 editor_window::hide(window.app_handle());
             }
             // A shortcut recorder left open never keeps the global shortcuts paused.
-            WindowEvent::Focused(false) if window.label() == capture::EDITOR_WINDOW => shortcuts::resume(window.app_handle()),
+            WindowEvent::Focused(false) if window.label() == app_settings::SETTINGS_WINDOW => {
+                shortcuts::resume(window.app_handle());
+            }
             // The paths of files dropped on the editor come from the system, never the page.
             WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) if window.label() == capture::EDITOR_WINDOW => {
                 import::open_dropped(window.app_handle(), paths);
             }
             WindowEvent::Destroyed => {
+                if window.label() == app_settings::SETTINGS_WINDOW {
+                    shortcuts::resume(window.app_handle());
+                }
                 selector::on_window_destroyed(window.app_handle(), window.label());
                 scroll::on_window_destroyed(window.app_handle(), window.label());
             }
@@ -109,7 +115,12 @@ pub fn run() {
             output::prepare_export,
             share_drag::share_export,
             share_drag::drag_export,
-            editor_window::close_editor
+            editor_window::close_editor,
+            app_settings::get_app_settings,
+            app_settings::set_app_toggle,
+            app_settings::open_settings,
+            app_settings::show_history,
+            app_settings::open_history_folder
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));

@@ -1,0 +1,163 @@
+/* The Preferences window: one view, centred header, then the settings in a single column. */
+@import "./styles/base.css";
+@import "./styles/inspector.css";
+
+body {
+  overflow-y: auto;
+}
+
+.preferences {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px 24px 20px;
+}
+
+.preferences-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--separator);
+  text-align: center;
+}
+
+.app-icon {
+  width: 100px;
+  height: 100px;
+}
+
+.preferences-header h1 {
+  margin: 4px 0 0;
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.version {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.preferences-header p {
+  margin: 0 0 6px;
+}
+
+.large-button {
+  height: 32px;
+  padding: 0 20px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 13px;
+}
+
+.large-button:active {
+  filter: brightness(0.92);
+}
+
+.preferences-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.preferences-section h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.preferences-section.checks {
+  gap: 10px;
+}
+
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.path.empty {
+  direction: ltr;
+  white-space: normal;
+}
+
+.path-row .text-field {
+  flex: 1;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+code,
+kbd {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+}
+
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: 1fr 150px auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.shortcut-row > span {
+  text-align: right;
+}
+
+.shortcut-row button {
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 5px;
+  background: var(--window);
+  box-shadow: 0 0 0 0.5px var(--pill-border), 0 0.5px 1px rgba(0, 0, 0, 0.12);
+  font-variant-numeric: tabular-nums;
+}
+
+button.shortcut-recorder[aria-pressed="true"] {
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.shortcut-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--error);
+  font-size: 11px;
+}
+
+.status {
+  min-height: 1.3em;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.status.error {
+  color: var(--error);
+}

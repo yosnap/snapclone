@@ -27,7 +27,6 @@ import { bindRedactPanel } from "./redact-panel";
 import { type Capture, edgeColor, layout, makeCapture, outputCanvas, render } from "./render";
 import { bindReopen, reopenLast } from "./reopen-last";
 import { loadSettings, saveSetting } from "./settings";
-import { SettingsView } from "./settings-view";
 import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
 import { TextView } from "./text-view";
@@ -412,6 +411,17 @@ const copy = () =>
     return "Copiada al portapapeles";
   }, "No se pudo copiar");
 
+/** ⌘C and "Copiar": copies, then closes the editor when the user asked for it in Ajustes. */
+async function copyFromEditor(): Promise<void> {
+  if (!(await copy()) || outsideTauri) return;
+  try {
+    const { closeAfterCopy } = await invoke<{ closeAfterCopy: boolean }>("get_app_settings");
+    if (closeAfterCopy) await invoke("close_editor");
+  } catch (error) {
+    showStatus(`No se pudo cerrar el editor: ${error}`, true);
+  }
+}
+
 const saveAs = () =>
   exportWith(async (target) => ((await saveToFile(target)) ? "Imagen guardada" : null), "No se pudo guardar");
 
@@ -468,7 +478,7 @@ function moreItems(): MenuItem[] {
 }
 
 const bottomBar = new BottomBar(zoom, {
-  copy,
+  copy: () => void copyFromEditor(),
   save,
   saveAs,
   prepareDrag: prepareShared,
@@ -583,10 +593,9 @@ function showZoneShortcut(entries: ShortcutEntry[]): void {
   hint.replaceChildren("Pulsa ", key, " o usa el icono de la barra de menús.");
 }
 
-const settingsView = new SettingsView(showZoneShortcut);
+/** The Preferences window, opened by Rust like "Ajustes…" in the menus. */
 function openSettings(): void {
-  historyView.close();
-  settingsView.show().catch((error) => showStatus(`No se pudieron abrir los ajustes: ${error}`, true));
+  invoke("open_settings").catch((error) => showStatus(`No se pudieron abrir los ajustes: ${error}`, true));
 }
 
 document.addEventListener("keydown", (event) => {
@@ -597,7 +606,7 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if (settingsView.isOpen || popoverContains(event.target)) return;
+  if (popoverContains(event.target)) return;
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
   const inForm = editingText || event.target instanceof HTMLSelectElement;
   // ⇧⌘Z: native redo in a field, the editor's redo with a capture, otherwise reopen the last one.
@@ -638,7 +647,7 @@ document.addEventListener("keydown", (event) => {
     return;
   } else if (event.key === "c" && !editingText) {
     event.preventDefault();
-    copy();
+    void copyFromEditor();
   } else if (event.key === "s") {
     event.preventDefault();
     save();
@@ -655,19 +664,22 @@ if (!outsideTauri) {
   listen<CaptureReady>("capture-ready", (event) => {
     historyView.close();
     textView.close();
-    settingsView.close();
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
   listenNotices(showStatus);
   bindReopen((id) => {
     historyView.close();
     textView.close();
-    settingsView.close();
     return reopenCapture(id);
   }, showStatus);
   highlightDrops(document.querySelector<HTMLElement>(".canvas-area")!);
-  // "Ajustes…" in the app menu (⌘,) and in the menu bar icon.
-  listen("open-settings", openSettings);
+  // "Ver historial" in the Preferences window.
+  listen("open-history", () => {
+    textView.close();
+    void historyView.show();
+  });
+  // A shortcut changed in the Preferences window.
+  listen<ShortcutEntry[]>("shortcuts-changed", (event) => showZoneShortcut(event.payload));
   listen<string>("capture-failed", (event) => {
     historyView.close();
     showStatus(`No se pudo hacer la captura: ${event.payload}`, true);
