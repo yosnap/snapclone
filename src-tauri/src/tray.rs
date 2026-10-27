@@ -6,13 +6,14 @@ use tauri::{
 
 use crate::{
     capture::{self, CaptureKind},
-    editor_window,
+    editor_window, import,
     shortcuts::ShortcutEntry,
 };
 
 /// Shared by the menu bar icon and the app menu, so both open the same settings.
 const SETTINGS_ID: &str = "settings";
 const CAPTURE_PREFIX: &str = "capture-";
+const CLIPBOARD_ID: &str = "open-clipboard";
 
 /// The capture entries, kept so their shortcuts can be updated when they change.
 struct CaptureItems(Vec<(CaptureKind, MenuItem<Wry>)>);
@@ -30,6 +31,7 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
             MenuItem::with_id(app, id, capture_title(kind), true, None::<&str>).map(|item| (kind, item))
         })
         .collect::<tauri::Result<Vec<_>>>()?;
+    let clipboard_item = MenuItem::with_id(app, CLIPBOARD_ID, "Abrir desde el portapapeles", true, None::<&str>)?;
     let open_item = MenuItem::with_id(app, "open", "Abrir Snapclone", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, SETTINGS_ID, "Ajustes…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Salir", true, Some("Cmd+Q"))?;
@@ -39,7 +41,7 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
     for (_, item) in &captures {
         menu.append(item)?;
     }
-    menu.append_items(&[&separator, &open_item, &settings_item, &separator, &quit_item])?;
+    menu.append_items(&[&separator, &clipboard_item, &separator, &open_item, &settings_item, &separator, &quit_item])?;
     app.manage(CaptureItems(captures));
     show_shortcuts(app, shortcuts);
 
@@ -73,6 +75,7 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
     match id {
         "open" => editor_window::show(app, false),
         SETTINGS_ID => editor_window::show_settings(app),
+        CLIPBOARD_ID => import::open_clipboard(app),
         "quit" => app.exit(0),
         _ => {}
     }

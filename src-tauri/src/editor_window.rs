@@ -1,6 +1,7 @@
 //! The editor window and the Dock icon. The window starts hidden and is shown centred on the
 //! main display, so it never opens behind other apps or on a monitor that is gone.
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 use crate::{
@@ -11,6 +12,13 @@ use crate::{
 
 const DOCK_HIDDEN_KEY: &str = "hideDockIcon";
 const SETTINGS_EVENT: &str = "open-settings";
+const NOTICE_EVENT: &str = "editor-notice";
+
+#[derive(Clone, Serialize)]
+struct Notice<'a> {
+    message: &'a str,
+    error: bool,
+}
 
 /// Shows, raises and focuses the editor. At launch, or when it would sit off every monitor,
 /// it is first centred on the main display.
@@ -31,6 +39,18 @@ pub fn show_settings(app: &AppHandle) {
     show(app, false);
     if let Err(error) = app.emit_to(EDITOR_WINDOW, SETTINGS_EVENT, ()) {
         eprintln!("open-settings emit failed: {error}");
+    }
+}
+
+/// Brings the editor forward with a message in its status line, so the outcome of an action
+/// started from the menu bar is never lost behind a hidden window.
+pub fn notify(app: &AppHandle, message: &str, error: bool) {
+    if error {
+        eprintln!("{message}");
+    }
+    show(app, false);
+    if let Err(emit_error) = app.emit_to(EDITOR_WINDOW, NOTICE_EVENT, Notice { message, error }) {
+        eprintln!("editor-notice emit failed: {emit_error}");
     }
 }
 

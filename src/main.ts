@@ -16,6 +16,7 @@ import { bindControls } from "./controls";
 import { DocumentSaver } from "./document-saver";
 import { copyToClipboard, saveToFile } from "./export";
 import { HistoryView, type OpenedCapture, captureUrl } from "./history-view";
+import { listenNotices, openClipboard } from "./open-image";
 import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
@@ -423,6 +424,9 @@ document.addEventListener("keydown", (event) => {
   } else if (event.key === "s") {
     event.preventDefault();
     saveImage();
+  } else if (event.key === "v" && !editingText && !outsideTauri) {
+    event.preventDefault();
+    openClipboard(showStatus);
   }
 });
 
@@ -435,6 +439,7 @@ if (!outsideTauri) {
     settingsView.close();
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
+  listenNotices(showStatus);
   // "Ajustes…" in the app menu (⌘,) and in the menu bar icon.
   listen("open-settings", openSettings);
   listen<string>("capture-failed", (event) => {

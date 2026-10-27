@@ -6,6 +6,7 @@ mod export;
 mod geometry;
 mod history;
 mod images;
+mod import;
 mod prefs;
 mod redact;
 mod screen;
@@ -80,7 +81,8 @@ pub fn run() {
             shortcuts::set_shortcut,
             shortcuts::pause_shortcuts,
             scroll::finish_scroll,
-            scroll::cancel_scroll
+            scroll::cancel_scroll,
+            import::open_clipboard_image
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));

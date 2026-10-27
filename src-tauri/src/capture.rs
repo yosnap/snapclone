@@ -300,7 +300,7 @@ async fn run_screencapture(dir: &Path, args: &[&str]) -> Result<Option<(String, 
 
 /// Reads the display scale from the PNG `pHYs` chunk: screencapture stores 144 DPI for
 /// Retina captures and omits the chunk at 1x, which falls back to 1.
-fn png_scale(png: &[u8]) -> f64 {
+pub fn png_scale(png: &[u8]) -> f64 {
     const POINTS_PER_INCH: f64 = 72.0;
     const METERS_PER_INCH: f64 = 0.0254;
     let mut offset = 8;
