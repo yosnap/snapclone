@@ -143,6 +143,25 @@ pub fn get(connection: &Connection, id: &str) -> rusqlite::Result<Option<Entry>>
         .optional()
 }
 
+/// The newest capture whose image is still on disk. `exists` is the file check, injected so
+/// the choice can be tested without files.
+pub fn latest(connection: &Connection, exists: impl Fn(&Path) -> bool) -> rusqlite::Result<Option<String>> {
+    let mut statement = connection.prepare("SELECT id, path FROM captures ORDER BY created_at DESC, rowid DESC")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(1)?;
+        if exists(Path::new(&path)) {
+            return row.get(0).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+/// Id of the capture "Reabrir última captura" and "Copiar texto de la última captura" use.
+pub fn latest_id(app: &AppHandle) -> Result<Option<String>, String> {
+    latest(&app.state::<History>().connection(), Path::exists).map_err(|error| error.to_string())
+}
+
 /// Removes the row and returns the image path it pointed to, if the id existed.
 pub fn delete(connection: &Connection, id: &str) -> rusqlite::Result<Option<PathBuf>> {
     let path = get(connection, id)?.map(|entry| entry.path);
@@ -311,6 +330,27 @@ mod tests {
             get(&connection, "a").unwrap(),
             Some(Entry { path: PathBuf::from("/tmp/a.png"), scale: 2.0, document: Some(r#"{"version":1}"#.into()) })
         );
+    }
+
+    #[test]
+    fn latest_is_the_newest_capture_whose_image_exists() {
+        let connection = database();
+        assert_eq!(latest(&connection, |_| true).unwrap(), None, "an empty history has none");
+        for (id, at) in [("old", 10), ("gone", 30), ("mid", 20)] {
+            insert(&connection, id, at, Path::new(&format!("/tmp/{id}.png")), 1.0).unwrap();
+        }
+        assert_eq!(latest(&connection, |_| true).unwrap().as_deref(), Some("gone"));
+        let without_gone = |path: &Path| path != Path::new("/tmp/gone.png");
+        assert_eq!(latest(&connection, without_gone).unwrap().as_deref(), Some("mid"));
+        assert_eq!(latest(&connection, |_| false).unwrap(), None);
+    }
+
+    #[test]
+    fn latest_breaks_timestamp_ties_by_insertion_order() {
+        let connection = database();
+        insert(&connection, "first", 5, Path::new("/tmp/a.png"), 1.0).unwrap();
+        insert(&connection, "second", 5, Path::new("/tmp/b.png"), 1.0).unwrap();
+        assert_eq!(latest(&connection, |_| true).unwrap().as_deref(), Some("second"));
     }
 
     #[test]

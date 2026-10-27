@@ -170,7 +170,7 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
     if let Some(window) = app.get_webview_window(EDITOR_WINDOW)
         && window.is_visible().unwrap_or(false)
     {
-        let _ = window.hide();
+        editor_window::hide(&app);
         tokio::time::sleep(HIDE_SETTLE).await;
     }
 

@@ -15,6 +15,13 @@ const SETTINGS_ID: &str = "settings";
 const CAPTURE_PREFIX: &str = "capture-";
 const CLIPBOARD_ID: &str = "open-clipboard";
 const OPEN_FILE_ID: &str = "open-file";
+const REOPEN_ID: &str = "reopen-last";
+/// The app menu's copy, whose ⇧⌘Z comes and goes; see `editor_window::sync_reopen_shortcut`.
+const REOPEN_SHORTCUT_ID: &str = "reopen-last-shortcut";
+const REOPEN_ACCELERATOR: &str = "Shift+Cmd+Z";
+
+/// The app menu entry whose shortcut is switched on and off.
+struct ReopenItem(MenuItem<Wry>);
 
 /// The capture entries, kept so their shortcuts can be updated when they change.
 struct CaptureItems(Vec<(CaptureKind, MenuItem<Wry>)>);
@@ -34,6 +41,8 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
         .collect::<tauri::Result<Vec<_>>>()?;
     let clipboard_item = MenuItem::with_id(app, CLIPBOARD_ID, "Abrir desde el portapapeles", true, None::<&str>)?;
     let file_item = MenuItem::with_id(app, OPEN_FILE_ID, "Abrir archivo…", true, None::<&str>)?;
+    // The menu bar icon only shows the shortcut; it acts through the app menu.
+    let reopen_item = MenuItem::with_id(app, REOPEN_ID, "Reabrir última captura", true, Some(REOPEN_ACCELERATOR))?;
     let open_item = MenuItem::with_id(app, "open", "Abrir Snapclone", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, SETTINGS_ID, "Ajustes…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Salir", true, Some("Cmd+Q"))?;
@@ -43,7 +52,7 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
     for (_, item) in &captures {
         menu.append(item)?;
     }
-    menu.append_items(&[&separator, &clipboard_item, &file_item, &separator, &open_item, &settings_item, &separator, &quit_item])?;
+    menu.append_items(&[&separator, &clipboard_item, &file_item, &reopen_item, &separator, &open_item, &settings_item, &separator, &quit_item])?;
     app.manage(CaptureItems(captures));
     show_shortcuts(app, shortcuts);
 
@@ -79,13 +88,16 @@ pub fn on_menu_event(app: &AppHandle, id: &str) {
         SETTINGS_ID => editor_window::show_settings(app),
         CLIPBOARD_ID => import::open_clipboard(app),
         OPEN_FILE_ID => import::open_file_dialog(app),
+        REOPEN_ID => editor_window::reopen_last(app),
+        REOPEN_SHORTCUT_ID => editor_window::reopen_shortcut(app),
         "quit" => app.exit(0),
         _ => {}
     }
 }
 
 /// Adds "Ajustes…" (⌘,) to the default app menu, after "About", and "Abrir archivo…" (⌘O)
-/// to its File menu.
+/// and "Reabrir última captura" (⇧⌘Z) to its File menu, which comes before Edit so its ⇧⌘Z
+/// wins over Redo while it is on.
 pub fn extend_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let Some(menu) = app.menu() else { return Ok(()) };
     let mut submenus = menu.items()?.into_iter().filter_map(|item| match item {
@@ -98,7 +110,19 @@ pub fn extend_app_menu(app: &AppHandle) -> tauri::Result<()> {
     app_menu.insert(&PredefinedMenuItem::separator(app)?, 3)?;
 
     let open_file = MenuItem::with_id(app, OPEN_FILE_ID, "Abrir archivo…", true, Some("Cmd+O"))?;
+    // Starts on: the editor has no capture until the page reports one.
+    let reopen = MenuItem::with_id(app, REOPEN_SHORTCUT_ID, "Reabrir última captura", true, Some(REOPEN_ACCELERATOR))?;
     file_menu.insert(&open_file, 0)?;
-    file_menu.insert(&PredefinedMenuItem::separator(app)?, 1)?;
+    file_menu.insert(&reopen, 1)?;
+    file_menu.insert(&PredefinedMenuItem::separator(app)?, 2)?;
+    app.manage(ReopenItem(reopen));
     Ok(())
+}
+
+/// Gives the app menu's "Reabrir última captura" its ⇧⌘Z, or takes it away so it is redo.
+pub fn set_reopen_shortcut(app: &AppHandle, enabled: bool) {
+    let Some(item) = app.try_state::<ReopenItem>() else { return };
+    if let Err(error) = item.0.set_accelerator(enabled.then_some(REOPEN_ACCELERATOR)) {
+        eprintln!("reopen shortcut could not be updated: {error}");
+    }
 }

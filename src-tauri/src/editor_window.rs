@@ -1,18 +1,27 @@
 //! The editor window and the Dock icon. The window starts hidden and is shown centred on the
 //! main display, so it never opens behind other apps or on a monitor that is gone.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 use crate::{
     capture::EDITOR_WINDOW,
     geometry::{self, Rect},
-    prefs,
+    history, prefs, tray,
 };
 
 const DOCK_HIDDEN_KEY: &str = "hideDockIcon";
 const SETTINGS_EVENT: &str = "open-settings";
 const NOTICE_EVENT: &str = "editor-notice";
+const REOPEN_EVENT: &str = "reopen-capture";
+/// ⇧⌘Z pressed while the editor is visible and empty; the page tells redoing text from reopening.
+const REOPEN_SHORTCUT_EVENT: &str = "reopen-shortcut";
+
+/// Whether the editor shows a capture, as the page reports it; ⇧⌘Z only reopens without one.
+#[derive(Default)]
+pub struct EditorContent(AtomicBool);
 
 #[derive(Clone, Serialize)]
 struct Notice<'a> {
@@ -32,6 +41,60 @@ pub fn show(app: &AppHandle, recenter: bool) {
         eprintln!("editor window could not be shown: {error}");
     }
     let _ = window.set_focus();
+    sync_reopen_shortcut(app, true);
+}
+
+/// Hides the editor; the app keeps running in the menu bar and the Dock.
+pub fn hide(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
+        let _ = window.hide();
+    }
+    sync_reopen_shortcut(app, false);
+}
+
+/// ⇧⌘Z is redo while a capture is open in the visible editor, so the app menu only takes it
+/// for "Reabrir última captura" when the editor is hidden or empty. Visibility is passed in
+/// because a hide requested off the main thread may not have happened yet.
+pub fn sync_reopen_shortcut(app: &AppHandle, visible: bool) {
+    let loaded = app.state::<EditorContent>().0.load(Ordering::SeqCst);
+    tray::set_reopen_shortcut(app, !(visible && loaded));
+}
+
+#[tauri::command]
+pub fn set_editor_loaded(app: AppHandle, state: tauri::State<'_, EditorContent>, loaded: bool) {
+    state.0.store(loaded, Ordering::SeqCst);
+    let visible = app.get_webview_window(EDITOR_WINDOW).is_some_and(|window| window.is_visible().unwrap_or(false));
+    sync_reopen_shortcut(&app, visible);
+}
+
+/// Opens the newest capture of the history with its document, in the editor.
+pub fn reopen_last(app: &AppHandle) {
+    match history::latest_id(app) {
+        Ok(Some(id)) => {
+            show(app, false);
+            if let Err(error) = app.emit_to(EDITOR_WINDOW, REOPEN_EVENT, id) {
+                eprintln!("reopen-capture emit failed: {error}");
+            }
+        }
+        Ok(None) => notify(app, "Todavía no hay ninguna captura que reabrir", false),
+        Err(error) => notify(app, &format!("No se pudo leer el historial: {error}"), true),
+    }
+}
+
+/// The app menu's ⇧⌘Z. With the editor hidden it reopens at once; with it visible (and
+/// empty, or the shortcut would be off) the page decides, so redo still works in its fields.
+pub fn reopen_shortcut(app: &AppHandle) {
+    let visible = app.get_webview_window(EDITOR_WINDOW).is_some_and(|window| window.is_visible().unwrap_or(false));
+    if !visible {
+        reopen_last(app);
+    } else if let Err(error) = app.emit_to(EDITOR_WINDOW, REOPEN_SHORTCUT_EVENT, ()) {
+        eprintln!("reopen-shortcut emit failed: {error}");
+    }
+}
+
+#[tauri::command]
+pub fn reopen_last_capture(app: AppHandle) {
+    reopen_last(&app);
 }
 
 /// Brings the editor forward with its settings open.

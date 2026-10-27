@@ -20,6 +20,7 @@ import { highlightDrops, listenNotices, openClipboard, openFile } from "./open-i
 import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { bindPresets } from "./presets";
 import { type Capture, layout, makeCapture, render } from "./render";
+import { bindReopen, reportLoaded } from "./reopen-last";
 import { loadSettings, saveSetting } from "./settings";
 import { SettingsView } from "./settings-view";
 import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
@@ -147,6 +148,7 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   emptyState.hidden = true;
   canvas.hidden = false;
   showStatus("");
+  reportLoaded(true);
   syncExportButtons();
   // The document's own style, or the defaults for a new capture; neither is persisted here.
   applyStoredStyle(style, saved?.style ?? defaults.style);
@@ -188,6 +190,7 @@ function captureDeleted(id: string): void {
   canvas.hidden = true;
   emptyState.hidden = false;
   syncExportButtons();
+  reportLoaded(false);
 }
 
 function balanceOf(source: Capture): { result: BalanceResult; capture: Capture | null } {
@@ -442,6 +445,13 @@ if (!outsideTauri) {
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
   listenNotices(showStatus);
+  // A reloaded page starts empty, whatever Rust last heard.
+  reportLoaded(false);
+  bindReopen((id) => {
+    historyView.close();
+    settingsView.close();
+    return reopenCapture(id);
+  }, showStatus);
   highlightDrops(document.querySelector<HTMLElement>(".canvas-area")!);
   // "Ajustes…" in the app menu (⌘,) and in the menu bar icon.
   listen("open-settings", openSettings);

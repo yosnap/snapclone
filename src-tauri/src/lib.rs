@@ -29,6 +29,7 @@ pub fn run() {
         .manage(selector::Selection::default())
         .manage(shortcuts::Shortcuts::default())
         .manage(scroll::ScrollCapture::default())
+        .manage(editor_window::EditorContent::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -50,7 +51,7 @@ pub fn run() {
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } if window.label() == capture::EDITOR_WINDOW => {
                 api.prevent_close();
-                let _ = window.hide();
+                editor_window::hide(window.app_handle());
             }
             // A shortcut recorder left open never keeps the global shortcuts paused.
             WindowEvent::Focused(false) if window.label() == capture::EDITOR_WINDOW => shortcuts::resume(window.app_handle()),
@@ -87,7 +88,9 @@ pub fn run() {
             scroll::finish_scroll,
             scroll::cancel_scroll,
             import::open_clipboard_image,
-            import::open_image_file
+            import::open_image_file,
+            editor_window::set_editor_loaded,
+            editor_window::reopen_last_capture
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));
