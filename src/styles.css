@@ -408,6 +408,35 @@ button.history-open:focus-visible {
   font-size: 0.9em;
 }
 
+.settings-panel {
+  width: min(560px, 100%);
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-section h3 {
+  margin: 0;
+  font-size: 1em;
+}
+
+.settings-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
 [hidden] {
   display: none !important;
 }

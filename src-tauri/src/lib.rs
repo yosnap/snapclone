@@ -1,12 +1,15 @@
 mod capture;
+mod editor_window;
 mod export;
+mod geometry;
 mod history;
 mod images;
+mod prefs;
 mod redact;
 mod selector;
 mod tray;
 
-use tauri::{Manager, WindowEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,7 +37,8 @@ pub fn run() {
                 responder.respond(capture::serve(&app, &request));
             });
         })
-        // Menu bar app: closing the editor hides it instead of quitting.
+        .on_menu_event(|app, event| tray::on_menu_event(app, event.id.as_ref()))
+        // Closing the editor hides it; the app keeps running in the menu bar and the Dock.
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } if window.label() == capture::EDITOR_WINDOW => {
                 api.prevent_close();
@@ -57,16 +61,26 @@ pub fn run() {
             selector::selector_frame,
             selector::cancel_selection,
             selector::finish_selection,
-            selector::finish_window
+            selector::finish_window,
+            editor_window::get_dock_hidden,
+            editor_window::set_dock_hidden
         ])
         .setup(move |app| {
             app.manage(history::History::open(app.handle()));
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_activation_policy(editor_window::activation_policy(editor_window::dock_hidden(app.handle())));
             tray::build(app.handle())?;
+            tray::add_settings_to_app_menu(app.handle())?;
             app.global_shortcut().register(capture_shortcut)?;
+            editor_window::show(app.handle(), true);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // A click on the Dock icon, or opening the app again while it runs.
+            if let RunEvent::Reopen { .. } = event {
+                editor_window::show(app, false);
+            }
+        });
 }

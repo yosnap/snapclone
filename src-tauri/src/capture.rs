@@ -10,7 +10,7 @@ use std::{
 use serde::Serialize;
 use tauri::{http, AppHandle, Emitter, Manager};
 
-use crate::{history, images, selector};
+use crate::{editor_window, history, images, selector};
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
 const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
@@ -101,10 +101,7 @@ async fn capture_region(app: AppHandle) {
 /// lost silently behind a hidden window.
 pub fn report_failure(app: &AppHandle, error: &str) {
     eprintln!("capture failed: {error}");
-    if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    editor_window::show(app, false);
     if let Err(emit_error) = app.emit_to(EDITOR_WINDOW, FAILED_EVENT, error) {
         eprintln!("capture-failed emit failed: {emit_error}");
     }
@@ -126,10 +123,7 @@ pub fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
         }
     });
     app.state::<Captures>().files.lock().unwrap().insert(id.clone(), path);
-    if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    editor_window::show(app, false);
     if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale }) {
         eprintln!("capture-ready emit failed: {error}");
     }

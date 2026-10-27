@@ -16,7 +16,9 @@
         "label": "main",
         "title": "Snapclone",
         "width": 1000,
-        "height": 700
+        "height": 700,
+        "center": true,
+        "visible": false
       }
     ],
     "security": {

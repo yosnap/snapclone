@@ -94,6 +94,7 @@
           <button id="save-button" type="button" class="secondary" disabled>Guardar <kbd>⌘S</kbd></button>
           <button type="button" class="secondary" data-action="capture">Nueva captura</button>
           <button type="button" id="history-button" class="secondary">Historial</button>
+          <button type="button" id="settings-button" class="secondary" title="Ajustes (⌘,)">Ajustes</button>
         </div>
         <p id="status" class="status" role="status"></p>
       </aside>
@@ -108,6 +109,26 @@
         <p id="history-empty" class="history-empty" hidden>Todavía no hay capturas guardadas.</p>
         <ul id="history-list" class="history-list"></ul>
         <button type="button" id="history-more" class="secondary history-more" hidden>Mostrar más</button>
+      </div>
+    </div>
+
+    <div id="settings" class="history" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+      <div class="history-panel settings-panel">
+        <header class="history-header">
+          <h2 id="settings-title">Ajustes</h2>
+          <button type="button" id="settings-close" class="secondary compact">Cerrar</button>
+        </header>
+        <div class="settings-body">
+          <section class="settings-section">
+            <h3>General</h3>
+            <label class="check">
+              <input type="checkbox" id="dock-hidden" />
+              Ocultar icono del Dock
+            </label>
+            <p class="settings-hint">Snapclone seguirá en la barra de menús.</p>
+            <p id="settings-status" class="status" role="status"></p>
+          </section>
+        </div>
       </div>
     </div>
   </body>
