@@ -23,6 +23,7 @@ import { loadSettings, saveSetting } from "./settings";
 import { SettingsView } from "./settings-view";
 import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
+import { ensureWallpaper } from "./wallpaper";
 
 type CaptureReady = { id: string; scale: number };
 
@@ -109,6 +110,7 @@ function currentDocument(): CaptureDocument {
 
 function scheduleRender(): void {
   if (!capture || renderQueued) return;
+  if (style.background.kind === "wallpaper") ensureWallpaper(wallpaperLoaded);
   renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
@@ -116,6 +118,12 @@ function scheduleRender(): void {
     render(canvas, capture, style, editor.overlay(true));
     editor.syncTextEntry();
   });
+}
+
+/** The default gradient stands in when macOS gives no usable desktop picture. */
+function wallpaperLoaded(error: string | null): void {
+  if (error === null) scheduleRender();
+  else showStatus(`No se pudo usar el fondo de escritorio (${error}); se muestra el degradado por defecto`, true);
 }
 
 /** Opens a capture; `saved` restores the style and annotations it had in the history. */

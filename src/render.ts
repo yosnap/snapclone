@@ -1,5 +1,6 @@
 import { type Annotation, FONT_STACK, drawAnnotations, drawSelection } from "./annotations";
-import { type Background, type Style, ratioValue } from "./style";
+import { type Background, type Style, GRADIENT_PRESETS, ratioValue } from "./style";
+import { blurredWallpaper } from "./wallpaper";
 
 /** The capture as loaded, or a canvas derived from it (a balanced capture). */
 export type CaptureSource = HTMLImageElement | HTMLCanvasElement;
@@ -94,6 +95,8 @@ function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasEle
     objectId(capture.image),
     capture.scale,
     objectId(style.background),
+    // The wallpaper background keeps its identity while its image loads or is replaced.
+    style.background.kind === "wallpaper" && style.background.image ? objectId(style.background.image) : "",
     style.padding,
     style.radius,
     style.shadow,
@@ -172,8 +175,15 @@ function paintBackground(
       break;
     }
     case "image":
-      drawCover(ctx, background.image, width, height);
+      drawCover(ctx, background.image, background.image.naturalWidth, background.image.naturalHeight, width, height);
       return;
+    case "wallpaper": {
+      // Until macOS hands over the picture, or if it never does, the default gradient shows.
+      if (!background.image) return paintBackground(ctx, GRADIENT_PRESETS[0], width, height);
+      const blurred = blurredWallpaper(background.image);
+      drawCover(ctx, blurred, blurred.width, blurred.height, width, height);
+      return;
+    }
   }
   ctx.fillRect(0, 0, width, height);
 }
@@ -189,11 +199,21 @@ function cssLinearGradient(ctx: CanvasRenderingContext2D, angle: number, width: 
   return ctx.createLinearGradient(cx - dx * half, cy - dy * half, cx + dx * half, cy + dy * half);
 }
 
-function drawCover(ctx: CanvasRenderingContext2D, image: HTMLImageElement, width: number, height: number) {
-  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
+function drawCover(
+  ctx: CanvasRenderingContext2D,
+  image: CanvasImageSource,
+  imageWidth: number,
+  imageHeight: number,
+  width: number,
+  height: number,
+) {
+  const scale = Math.max(width / imageWidth, height / imageHeight);
+  const drawWidth = imageWidth * scale;
+  const drawHeight = imageHeight * scale;
+  ctx.save();
+  ctx.imageSmoothingQuality = "high";
   ctx.drawImage(image, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+  ctx.restore();
 }
 
 function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{http, AppHandle, Emitter, Manager};
 use xcap::image::RgbaImage;
 
-use crate::{editor_window, history, images, screen, selector};
+use crate::{editor_window, history, images, screen, selector, wallpaper};
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
 const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
@@ -21,6 +21,8 @@ const READY_EVENT: &str = "capture-ready";
 const FAILED_EVENT: &str = "capture-failed";
 /// `capture://localhost/thumbnail/<id>` serves the small preview of a capture.
 const THUMBNAIL_PREFIX: &str = "thumbnail/";
+/// `capture://localhost/wallpaper` serves the current desktop picture; capture ids are UUIDs.
+const WALLPAPER_PATH: &str = "wallpaper";
 
 /// Captured files by id, served to the editor through the `capture://` scheme.
 #[derive(Default)]
@@ -322,16 +324,22 @@ fn png_scale(png: &[u8]) -> f64 {
 }
 
 /// Serves `capture://localhost/<id>` with CORS so the editor canvas stays exportable.
+/// Failures carry a plain-text reason the editor can show.
 pub fn serve(app: &AppHandle, request: &http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
     let requested = request.uri().path().trim_start_matches('/');
-    let path = match requested.strip_prefix(THUMBNAIL_PREFIX) {
-        Some(id) => path_of(app, id).map(|path| thumbnail_or_capture(&path)),
-        None => path_of(app, requested),
+    let served = if requested == WALLPAPER_PATH {
+        wallpaper::read(app)
+    } else {
+        let path = match requested.strip_prefix(THUMBNAIL_PREFIX) {
+            Some(id) => path_of(app, id).map(|path| thumbnail_or_capture(&path)),
+            None => path_of(app, requested),
+        };
+        path.and_then(|path| std::fs::read(path).ok()).map(|bytes| (bytes, "image/png")).ok_or_else(|| "unknown capture".to_string())
     };
     let response = http::Response::builder().header("Access-Control-Allow-Origin", "*");
-    match path.and_then(|path| std::fs::read(path).ok()) {
-        Some(bytes) => response.header("Content-Type", "image/png").body(bytes),
-        None => response.status(404).body(Vec::new()),
+    match served {
+        Ok((bytes, kind)) => response.header("Content-Type", kind).body(bytes),
+        Err(reason) => response.status(404).header("Content-Type", "text/plain; charset=utf-8").body(reason.into_bytes()),
     }
     .expect("static response parts are valid")
 }

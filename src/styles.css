@@ -475,3 +475,8 @@ button.shortcut-recorder[aria-pressed="true"] {
 [hidden] {
   display: none !important;
 }
+
+/* The desktop picture swatch, saturated like the background it stands for. */
+.wallpaper-swatch {
+  filter: saturate(1.4);
+}

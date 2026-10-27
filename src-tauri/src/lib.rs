@@ -14,6 +14,7 @@ mod selector;
 mod shortcuts;
 mod stitch;
 mod tray;
+mod wallpaper;
 
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
