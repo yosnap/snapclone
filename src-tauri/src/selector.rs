@@ -304,9 +304,29 @@ pub fn selector_ready(window: WebviewWindow) -> Result<(), String> {
     window.show().map_err(|error| error.to_string())?;
     if index == 0 {
         window.set_focus().map_err(|error| error.to_string())?;
+        show_crosshair(window.app_handle());
     }
     Ok(())
 }
+
+/// The page's CSS cursor only applies once WebKit sees the pointer move over an active app.
+/// The shot is already taken, so activating now keeps the capture invariant, and the
+/// crosshair is set at once instead of the arrow staying until the first movement.
+#[cfg(target_os = "macos")]
+fn show_crosshair(app: &AppHandle) {
+    let result = app.run_on_main_thread(|| {
+        let Some(main_thread) = objc2::MainThreadMarker::new() else { return };
+        #[allow(deprecated)]
+        objc2_app_kit::NSApplication::sharedApplication(main_thread).activateIgnoringOtherApps(true);
+        objc2_app_kit::NSCursor::crosshairCursor().set();
+    });
+    if let Err(error) = result {
+        eprintln!("the crosshair could not be shown: {error}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn show_crosshair(_app: &AppHandle) {}
 
 #[tauri::command]
 pub fn cancel_selection(app: AppHandle) {

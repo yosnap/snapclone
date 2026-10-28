@@ -17,8 +17,8 @@ import type { Layout, Overlay } from "./render";
 export type Tool = "select" | "text" | "arrow" | "redact" | "shape";
 export type TextSize = keyof typeof TEXT_SIZES;
 export type ShapeKind = "rect" | "oval" | "line";
-/** Arrow strokes in points: thin, medium and thick. */
-export const ARROW_WIDTHS = [2, 4, 7] as const;
+/** Shaft widths in points: thick, with a white outline, like Xnapper's arrows. */
+export const ARROW_WIDTHS = [8, 12, 16] as const;
 
 /** What each tool draws; repeating a tool's number key steps through its first option. */
 export type ToolOptions = {

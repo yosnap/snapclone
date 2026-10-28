@@ -36,7 +36,7 @@ export type AnnotationKind = Annotation["kind"];
 export const ANNOTATION_COLORS = ["#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#007aff", "#af52de", "#ffffff", "#000000"];
 
 const STROKE_WIDTH = 4;
-export const ARROW_WIDTH = 4;
+export const ARROW_WIDTH = 12;
 /** Text sizes in points, as Xnapper's small, medium and large. */
 export const TEXT_SIZES = { small: 16, medium: 32, large: 56 } as const;
 export const TEXT_SIZE = TEXT_SIZES.medium;
@@ -188,44 +188,77 @@ function drawArrow(ctx: CanvasRenderingContext2D, arrow: ArrowAnnotation, scale:
   const head = arrow.head ?? "filled";
   const angle = Math.atan2(arrow.to.y - arrow.from.y, arrow.to.x - arrow.from.x);
   const length = Math.hypot(arrow.to.x - arrow.from.x, arrow.to.y - arrow.from.y);
-  const headLength = Math.min(Math.max(width * 4, 12 * scale), head === "double" ? length / 2 : length);
+  const headLength = Math.min(Math.max(width * 3, 12 * scale), head === "double" ? length / 2 : length);
+  const headHalfWidth = Math.max(width * 1.45, 6 * scale);
   // A filled head covers the shaft's end, so the shaft stops at its base and its round cap
   // never pokes through the tip.
   const inset = head === "open" ? 0 : headLength * 0.8;
   const from = head === "double" ? along(arrow.from, angle, inset) : arrow.from;
+  const shaftEnd = along(arrow.to, angle + Math.PI, inset);
+  // A white outline and a soft shadow keep the arrow readable on any capture.
+  const outline = 3 * scale + width / 8;
 
-  ctx.strokeStyle = arrow.color;
-  ctx.fillStyle = arrow.color;
-  ctx.lineWidth = width;
+  const trace = (extra: number) => {
+    ctx.lineWidth = width + extra * 2;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(shaftEnd.x, shaftEnd.y);
+    ctx.stroke();
+    drawHead(ctx, arrow.to, angle, headLength, headHalfWidth, head === "open", extra);
+    if (head === "double") drawHead(ctx, arrow.from, angle + Math.PI, headLength, headHalfWidth, false, extra);
+  };
+
+  ctx.save();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  ctx.beginPath();
-  ctx.moveTo(from.x, from.y);
-  const shaftEnd = along(arrow.to, angle + Math.PI, inset);
-  ctx.lineTo(shaftEnd.x, shaftEnd.y);
-  ctx.stroke();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.35)";
+  ctx.shadowBlur = 3 * scale;
+  ctx.shadowOffsetY = scale;
+  ctx.strokeStyle = "#ffffff";
+  ctx.fillStyle = "#ffffff";
+  trace(outline);
+  ctx.restore();
 
-  drawHead(ctx, arrow.to, angle, headLength, head === "open");
-  if (head === "double") drawHead(ctx, arrow.from, angle + Math.PI, headLength, false);
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = arrow.color;
+  ctx.fillStyle = arrow.color;
+  trace(0);
+  ctx.restore();
 }
 
 function along(point: Point, angle: number, distance: number): Point {
   return { x: point.x + Math.cos(angle) * distance, y: point.y + Math.sin(angle) * distance };
 }
 
-function drawHead(ctx: CanvasRenderingContext2D, tip: Point, angle: number, length: number, open: boolean): void {
-  const spread = Math.PI / 7;
-  const left = along(tip, angle + Math.PI - spread, length);
-  const right = along(tip, angle + Math.PI + spread, length);
+/** A triangular head; `extra` grows it by that much on every side, for the outline pass. */
+function drawHead(
+  ctx: CanvasRenderingContext2D,
+  tip: Point,
+  angle: number,
+  length: number,
+  halfWidth: number,
+  open: boolean,
+  extra: number,
+): void {
+  const base = along(tip, angle + Math.PI, length);
+  const left = along(base, angle - Math.PI / 2, halfWidth);
+  const right = along(base, angle + Math.PI / 2, halfWidth);
   ctx.beginPath();
   ctx.moveTo(left.x, left.y);
   ctx.lineTo(tip.x, tip.y);
   ctx.lineTo(right.x, right.y);
   if (open) {
     ctx.stroke();
-  } else {
-    ctx.closePath();
-    ctx.fill();
+    return;
+  }
+  ctx.closePath();
+  ctx.fill();
+  if (extra > 0) {
+    // Stroking the filled triangle widens it evenly, so its outline matches the shaft's.
+    ctx.lineWidth = extra * 2;
+    ctx.stroke();
   }
 }
 
