@@ -15,6 +15,8 @@ import {
 type InspectorHandlers = {
   /** After every edit the user makes; `style` has already been changed. */
   changed: () => void;
+  /** Redraws without saving, while a colour picker is being dragged. */
+  previewed: () => void;
   wallpaperPicked: () => void;
   /** The detected edge colour of the capture shown, or null without one. */
   edgeColor: () => string | null;
@@ -37,6 +39,11 @@ export function bindInspector(root: HTMLElement, style: Style, handlers: Inspect
       refreshBackgrounds();
       handlers.changed();
     },
+    preview: (background: Background) => {
+      style.background = background;
+      refreshBackgrounds();
+      handlers.previewed();
+    },
     wallpaperPicked: handlers.wallpaperPicked,
   });
 
@@ -47,6 +54,10 @@ export function bindInspector(root: HTMLElement, style: Style, handlers: Inspect
   insetColor.addEventListener("input", () => {
     style.insetColor = insetColor.value;
     refreshInset();
+    handlers.previewed();
+  });
+  insetColor.addEventListener("change", () => {
+    style.insetColor = insetColor.value;
     handlers.changed();
   });
   const refreshInset = () => {

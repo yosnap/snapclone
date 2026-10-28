@@ -61,11 +61,20 @@ export function bindTopToolbar(root: HTMLElement, editor: AnnotationEditor, hand
       closePopover();
       return;
     }
-    openPopover(colorButton, palette(editor.color, (color) => {
-      editor.setColor(color);
-      handlers.colorChanged(color);
-      sync();
-    }));
+    openPopover(
+      colorButton,
+      palette(
+        editor.color,
+        (color) => {
+          editor.setColor(color);
+          handlers.colorChanged(color);
+          sync();
+        },
+        // While the system picker is dragged only the chip follows; the colour is applied
+        // and saved once, when the picker settles.
+        (color) => (colorChip.style.background = color),
+      ),
+    );
   });
 
   // Clicking the tip goes back to selecting and moving annotations.
@@ -85,7 +94,7 @@ export function bindTopToolbar(root: HTMLElement, editor: AnnotationEditor, hand
 }
 
 /** Swatches of the annotation colours plus the system colour picker. */
-function palette(selected: string, pick: (color: string) => void): HTMLElement {
+function palette(selected: string, pick: (color: string) => void, preview: (color: string) => void): HTMLElement {
   const grid = document.createElement("div");
   grid.className = "palette";
   for (const color of ANNOTATION_COLORS) {
@@ -106,7 +115,8 @@ function palette(selected: string, pick: (color: string) => void): HTMLElement {
   const input = document.createElement("input");
   input.type = "color";
   input.value = /^#[0-9a-f]{6}$/i.test(selected) ? selected : ANNOTATION_COLORS[0];
-  input.addEventListener("input", () => pick(input.value));
+  input.addEventListener("input", () => preview(input.value));
+  input.addEventListener("change", () => pick(input.value));
   custom.append(input, "Otro color…");
   grid.append(custom);
   return grid;

@@ -14,6 +14,8 @@ const DEFAULT_SOLID = "#1e293b";
 type PickerHandlers = {
   current: () => Background;
   select: (background: Background) => void;
+  /** Shows a background without saving it, while the colour picker is dragged. */
+  preview: (background: Background) => void;
   /** Runs every time the desktop picture is picked, so it is loaded or refreshed. */
   wallpaperPicked: () => void;
 };
@@ -93,10 +95,11 @@ function morePanel(handlers: PickerHandlers): HTMLElement {
   solid.type = "color";
   solid.className = "color-well";
   solid.value = current.kind === "solid" ? current.color : DEFAULT_SOLID;
-  // `click` applies the shown colour too; `input` alone only fires when it changes.
+  // `click` applies the shown colour too; `input` only previews and `change` saves.
   const selectSolid = () => handlers.select({ kind: "solid", color: solid.value });
   solid.addEventListener("click", selectSolid);
-  solid.addEventListener("input", selectSolid);
+  solid.addEventListener("input", () => handlers.preview({ kind: "solid", color: solid.value }));
+  solid.addEventListener("change", selectSolid);
   solidRow.append(solid, "Color liso");
 
   const imageRow = document.createElement("div");

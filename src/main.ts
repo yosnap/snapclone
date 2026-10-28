@@ -56,6 +56,11 @@ const style = defaultStyle();
 const redactSettings = defaultRedactSettings();
 /** The main checkbox and the way regions are hidden; the categories are `redactSettings`. */
 const redactPreferences = { enabled: true, mode: "pixelate" as RedactMode, categories: redactSettings };
+/**
+ * Automatic regions taken off the capture by a checkbox, as they were then (moved, some
+ * deleted), so turning it back on restores exactly that instead of every detection.
+ */
+let stashedRedactions = new Map<RedactCategory, PixelateAnnotation[]>();
 /** Shows how many regions were found (null while searching); replaced once bound. */
 let showFound: (found: number | null) => void = () => {};
 /** What the editor shows: the capture as taken, or its balanced version. */
@@ -131,7 +136,17 @@ function currentDocument(): CaptureDocument {
   };
 }
 
-function scheduleRender(): void {
+/**
+ * Bumped by every change that can alter the exported image, so the file prepared for
+ * "Arrástrame" and "Compartir" is reused until it is out of date.
+ */
+let exportVersion = 0;
+let preparedVersion = -1;
+let preparing: Promise<boolean> | null = null;
+
+/** `changed` is false for the redraw after an export, which changes nothing. */
+function scheduleRender(changed = true): void {
+  if (changed) exportVersion++;
   if (!capture || renderQueued) return;
   renderQueued = true;
   requestAnimationFrame(() => {
@@ -151,7 +166,7 @@ function scheduleRender(): void {
  */
 function requireWallpaper(): void {
   if (style.background.kind !== "wallpaper") return;
-  requestWallpaper().then(scheduleRender, (error) =>
+  requestWallpaper().then(() => scheduleRender(), (error) =>
     showStatus(`No se pudo usar el fondo de escritorio (${wallpaperError(error)}); se muestra el degradado por defecto`, true),
   );
 }
@@ -176,6 +191,7 @@ function showImage(image: HTMLImageElement, scale: number, id: string, saved: Ca
   shift = { x: 0, y: 0 };
   detectedRegions = [];
   detectedFor = null;
+  stashedRedactions = new Map();
   editor.reset();
   emptyState.hidden = true;
   canvas.hidden = false;
@@ -221,6 +237,7 @@ function captureDeleted(id: string): void {
   balanceCache = null;
   detectedRegions = [];
   detectedFor = null;
+  stashedRedactions = new Map();
   editor.reset();
   canvas.hidden = true;
   emptyState.hidden = false;
@@ -264,7 +281,12 @@ function applyBalance(enabled: boolean): void {
       );
     }
   }
-  editor.translate(offset.x - shift.x, offset.y - shift.y);
+  const dx = offset.x - shift.x;
+  const dy = offset.y - shift.y;
+  editor.translate(dx, dy);
+  for (const [category, regions] of stashedRedactions) {
+    stashedRedactions.set(category, regions.map((region) => moved(region, dx, dy) as PixelateAnnotation));
+  }
   shift = offset;
   capture = target;
   // The inset colour shown is the edge colour of the capture now shown.
@@ -303,22 +325,50 @@ function applicable(regions: PixelateAnnotation[]): PixelateAnnotation[] {
   return shifted(regions).map((region) => ({ ...region, ...mode }));
 }
 
-function removeAllAutoRedactions(): void {
-  for (const { id } of REDACT_CATEGORIES) editor.removeAutoRedactions(id);
+/** Takes a category's regions off the capture, remembering them as they are now. */
+function hideCategory(category: RedactCategory): void {
+  if (detectedFor !== captureId) return;
+  stashedRedactions.set(category, editor.autoRedactions(category));
+  editor.removeAutoRedactions(category);
 }
 
-/** The main checkbox or the mode changed: the regions on the capture follow. */
-function refreshAutoRedactions(): void {
-  saveSetting("autoRedact", redactPreferences.enabled);
-  saveSetting("redactMode", redactPreferences.mode);
-  if (!capture || !captureId) return;
-  removeAllAutoRedactions();
-  if (!anyRedaction()) return;
-  if (detectedFor === captureId) {
-    editor.addAutoRedactions(applicable(detectedRegions.filter((region) => region.auto && categoryApplies(region.auto))));
-  } else {
+/**
+ * Puts a category's regions back: as they were when hidden, or as detected the first
+ * time. Detection runs when it has not yet for this capture.
+ */
+function showCategory(category: RedactCategory): void {
+  if (!captureId) return;
+  if (detectedFor !== captureId) {
     runAutoRedaction(captureId);
+    return;
   }
+  const stashed = stashedRedactions.get(category);
+  stashedRedactions.delete(category);
+  const regions = stashed ?? applicable(regionsOf(category));
+  const mode = redactPreferences.mode === "solid" ? { mode: "solid" as const } : {};
+  editor.addAutoRedactions(regions.map(({ mode: _previous, ...region }) => ({ ...region, ...mode })));
+}
+
+/** The main checkbox changed: every category it governs follows. */
+function enabledChanged(): void {
+  saveSetting("autoRedact", redactPreferences.enabled);
+  if (!capture || !captureId) return;
+  for (const { id } of REDACT_CATEGORIES) {
+    if (!redactSettings[id]) continue;
+    if (redactPreferences.enabled) showCategory(id);
+    else hideCategory(id);
+  }
+}
+
+/**
+ * The one redaction mode, shared by the Redactar tool and automatic redaction. The
+ * automatic regions on the capture take it where they are; none is re-added.
+ */
+function setRedactMode(mode: RedactMode): void {
+  redactPreferences.mode = mode;
+  editor.redactMode = mode;
+  saveSetting("redactMode", mode);
+  editor.setAutoRedactionMode(mode);
 }
 
 async function runAutoRedaction(id: string): Promise<void> {
@@ -352,13 +402,8 @@ async function runAutoRedaction(id: string): Promise<void> {
 function toggleRedaction(category: RedactCategory, enabled: boolean): void {
   saveSetting("redact", { ...redactSettings });
   if (!capture || !captureId || !redactPreferences.enabled) return;
-  if (!enabled) {
-    editor.removeAutoRedactions(category);
-  } else if (detectedFor === captureId) {
-    editor.addAutoRedactions(applicable(regionsOf(category)));
-  } else {
-    runAutoRedaction(captureId);
-  }
+  if (enabled) showCategory(category);
+  else hideCategory(category);
 }
 
 function showStatus(message: string, isError = false): void {
@@ -401,7 +446,7 @@ async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string 
     return false;
   } finally {
     exporting = false;
-    scheduleRender();
+    scheduleRender(false);
   }
 }
 
@@ -411,16 +456,6 @@ const copy = () =>
     return "Copiada al portapapeles";
   }, "No se pudo copiar");
 
-/** ⌘C and "Copiar": copies, then closes the editor when the user asked for it in Ajustes. */
-async function copyFromEditor(): Promise<void> {
-  if (!(await copy()) || outsideTauri) return;
-  try {
-    const { closeAfterCopy } = await invoke<{ closeAfterCopy: boolean }>("get_app_settings");
-    if (closeAfterCopy) await invoke("close_editor");
-  } catch (error) {
-    showStatus(`No se pudo cerrar el editor: ${error}`, true);
-  }
-}
 
 const saveAs = () =>
   exportWith(async (target) => ((await saveToFile(target)) ? "Imagen guardada" : null), "No se pudo guardar");
@@ -438,7 +473,22 @@ async function copyAndClose(): Promise<void> {
 }
 
 /** The image file "Compartir" and "Arrástrame" hand to macOS, written by Rust. */
-const prepareShared = () => exportWith(async (target) => (await prepareExport(target), null), "No se pudo preparar la imagen");
+/**
+ * The image file "Compartir" and "Arrástrame" hand to macOS, written by Rust. It is kept
+ * while nothing changes, so a drag can start on the first movement of the press.
+ */
+function prepareShared(): Promise<boolean> {
+  if (capture && preparedVersion === exportVersion) return Promise.resolve(true);
+  if (preparing) return preparing;
+  const version = exportVersion;
+  preparing = exportWith(async (target) => (await prepareExport(target), null), "No se pudo preparar la imagen")
+    .then((ready) => {
+      if (ready) preparedVersion = version;
+      return ready;
+    })
+    .finally(() => (preparing = null));
+  return preparing;
+}
 
 async function share(anchor: HTMLElement): Promise<void> {
   if (!(await prepareShared())) return;
@@ -478,7 +528,8 @@ function moreItems(): MenuItem[] {
 }
 
 const bottomBar = new BottomBar(zoom, {
-  copy: () => void copyFromEditor(),
+  // Rust closes the editor after copying when "Cerrar la captura después de copiarla" is on.
+  copy: () => void copy(),
   save,
   saveAs,
   prepareDrag: prepareShared,
@@ -508,12 +559,15 @@ async function init(): Promise<void> {
   Object.assign(redactSettings, settings.redact);
   redactPreferences.enabled = settings.autoRedact;
   redactPreferences.mode = settings.redactMode;
+  editor.redactMode = settings.redactMode;
+  editor.requestRedactMode = setRedactMode;
   editor.setColor(settings.annotationColor);
   editor.options = settings.toolOptions;
   editor.onOptionsChange = (options) => saveSetting("toolOptions", options);
 
   refreshControls = bindInspector(sidebar, style, {
     changed: styleChanged,
+    previewed: () => scheduleRender(),
     wallpaperPicked: requireWallpaper,
     edgeColor: () => (capture ? edgeColor(capture) : null),
   });
@@ -529,9 +583,9 @@ async function init(): Promise<void> {
     notify: (message) => showStatus(message),
   });
   showFound = bindRedactPanel(sidebar, redactPreferences, {
-    enabledChanged: refreshAutoRedactions,
+    enabledChanged,
     categoryChanged: toggleRedaction,
-    modeChanged: refreshAutoRedactions,
+    modeChanged: setRedactMode,
   });
   balanceToggle.checked = settings.balance;
   balanceToggle.addEventListener("change", () => {
@@ -647,7 +701,7 @@ document.addEventListener("keydown", (event) => {
     return;
   } else if (event.key === "c" && !editingText) {
     event.preventDefault();
-    void copyFromEditor();
+    void copy();
   } else if (event.key === "s") {
     event.preventDefault();
     save();

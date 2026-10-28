@@ -67,13 +67,19 @@ export class BottomBar {
   }
 
   /**
-   * A press writes the image file; once it is ready, the next movement with the button still
-   * down asks AppKit to start a file drag from that mouse event.
+   * The image file is written as soon as the pointer comes over the button and kept while
+   * nothing changes, so the first movement of a press can start the drag. Rust checks the
+   * button is still down; a press released before that simply ends, with no message.
    */
   private bindDrag(): void {
     let press: { x: number; y: number; ready: boolean; started: boolean } | null = null;
+    const enabled = () => this.dragButton.getAttribute("aria-disabled") !== "true";
+    this.dragButton.addEventListener("pointerenter", () => {
+      // Failures are reported when the user actually presses.
+      if (enabled()) this.handlers.prepareDrag().catch(() => {});
+    });
     this.dragButton.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || this.dragButton.getAttribute("aria-disabled") === "true") return;
+      if (event.button !== 0 || !enabled()) return;
       this.dragButton.setPointerCapture(event.pointerId);
       const current = { x: event.clientX, y: event.clientY, ready: false, started: false };
       press = current;
@@ -86,7 +92,7 @@ export class BottomBar {
       if (!press || !press.ready || press.started) return;
       if (Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG_THRESHOLD) return;
       press.started = true;
-      invoke("drag_export").catch(this.handlers.dragFailed);
+      invoke<boolean>("drag_export").catch(this.handlers.dragFailed);
     });
     const end = () => (press = null);
     this.dragButton.addEventListener("pointerup", end);
