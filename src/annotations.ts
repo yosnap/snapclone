@@ -88,9 +88,11 @@ export function hitTest(annotations: Annotation[], point: Point, scale: number):
   const tolerance = HIT_TOLERANCE * scale;
   for (let index = annotations.length - 1; index >= 0; index--) {
     const annotation = annotations[index];
-    const hit = isSegment(annotation)
-      ? distanceToSegment(point, annotation.from, annotation.to) <= tolerance
-      : contains(bounds(annotation, scale), point, tolerance);
+    let hit: boolean;
+    if (isSegment(annotation)) hit = distanceToSegment(point, annotation.from, annotation.to) <= tolerance;
+    else if (annotation.kind === "rect") hit = nearRectOutline(annotation, point, tolerance);
+    else if (annotation.kind === "oval") hit = nearOvalOutline(annotation, point, tolerance);
+    else hit = contains(bounds(annotation, scale), point, tolerance);
     if (hit) return annotation;
   }
   return undefined;
@@ -251,6 +253,23 @@ function drawPixelate(ctx: CanvasRenderingContext2D, capture: Capture, box: Box)
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(pixelLayer, 0, 0, columns, rows, x, y, width, height);
   ctx.restore();
+}
+
+/** Outlined shapes are only hit near their stroke, so drawing inside one never grabs it. */
+function nearRectOutline(box: Box, point: Point, tolerance: number): boolean {
+  const inner = { x: box.x + tolerance, y: box.y + tolerance, width: box.width - tolerance * 2, height: box.height - tolerance * 2 };
+  const insideInner = inner.width > 0 && inner.height > 0 && contains(inner, point, 0);
+  return contains(box, point, tolerance) && !insideInner;
+}
+
+function nearOvalOutline(box: Box, point: Point, tolerance: number): boolean {
+  const rx = box.width / 2;
+  const ry = box.height / 2;
+  if (rx <= tolerance || ry <= tolerance) return contains(box, point, tolerance);
+  const dx = (point.x - (box.x + rx)) / rx;
+  const dy = (point.y - (box.y + ry)) / ry;
+  // Distance to the ellipse, approximated along the ray from its centre.
+  return Math.abs(Math.hypot(dx, dy) - 1) * Math.min(rx, ry) <= tolerance;
 }
 
 function contains(box: Box, point: Point, tolerance: number): boolean {

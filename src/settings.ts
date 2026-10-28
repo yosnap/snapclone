@@ -2,7 +2,6 @@ import { type Store, load } from "@tauri-apps/plugin-store";
 import {
   ARROW_HEAD_ORDER,
   ARROW_WIDTHS,
-  REDACT_MODE_ORDER,
   SHAPE_ORDER,
   TEXT_SIZE_ORDER,
   type ToolOptions,
@@ -83,7 +82,10 @@ export async function loadSettings(): Promise<Settings> {
   if (isHexColor(annotationColor)) settings.annotationColor = annotationColor;
   if (typeof balance === "boolean") settings.balance = balance;
   if (typeof autoRedact === "boolean") settings.autoRedact = autoRedact;
-  if (REDACT_MODES.includes(redactMode as RedactMode)) settings.redactMode = redactMode as RedactMode;
+  // One mode for the Redactar tool and automatic redaction. Older versions kept the tool's
+  // own inside "toolOptions"; it is taken when the shared one was never saved.
+  const legacyToolMode = isRecord(toolOptions) ? toolOptions.redactMode : undefined;
+  settings.redactMode = oneOf(REDACT_MODES, redactMode, oneOf(REDACT_MODES, legacyToolMode, settings.redactMode));
   settings.presets = parsePresets(presets);
   settings.toolOptions = parseToolOptions(toolOptions);
   return settings;
@@ -130,7 +132,6 @@ function parseToolOptions(value: unknown): ToolOptions {
     textSize: oneOf(TEXT_SIZE_ORDER, value.textSize, fallback.textSize),
     arrowHead: oneOf(ARROW_HEAD_ORDER, value.arrowHead, fallback.arrowHead),
     arrowWidth: oneOf<number>(ARROW_WIDTHS, value.arrowWidth, fallback.arrowWidth),
-    redactMode: oneOf(REDACT_MODE_ORDER, value.redactMode, fallback.redactMode),
     shape: oneOf(SHAPE_ORDER, value.shape, fallback.shape),
   };
 }

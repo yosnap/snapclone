@@ -2,12 +2,12 @@ import {
   ARROW_HEAD_ORDER,
   ARROW_WIDTHS,
   type AnnotationEditor,
-  REDACT_MODE_ORDER,
   SHAPE_ORDER,
   TEXT_SIZE_ORDER,
   type Tool,
   type ToolOptions,
 } from "./annotation-editor";
+import { REDACT_MODES } from "./auto-redact";
 import { icon } from "./icons";
 
 type Choice<T> = { value: T; label: string; icon?: string };
@@ -38,7 +38,14 @@ export function toolOptionsPanel(tool: Tool, editor: AnnotationEditor): HTMLElem
       add("Grosor", "arrowWidth", ARROW_WIDTHS.map((value, index) => ({ value, label: WIDTH_LABELS[index] })));
       break;
     case "redact":
-      add("Modo", "redactMode", REDACT_MODE_ORDER.map((value) => ({ value, ...REDACT_CHOICES[value] })));
+      panel.append(
+        segmented(
+          "Modo",
+          REDACT_MODES.map((value) => ({ value, ...REDACT_CHOICES[value] })),
+          () => editor.redactMode,
+          (mode) => editor.requestRedactMode(mode),
+        ),
+      );
       break;
     case "shape":
       add("Forma", "shape", SHAPE_ORDER.map((value) => ({ value, ...SHAPE_CHOICES[value] })));

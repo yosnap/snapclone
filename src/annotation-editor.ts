@@ -11,7 +11,7 @@ import {
   hitTest,
   moved,
 } from "./annotations";
-import type { RedactCategory, RedactMode } from "./auto-redact";
+import { REDACT_MODES, type RedactCategory, type RedactMode } from "./auto-redact";
 import type { Layout, Overlay } from "./render";
 
 export type Tool = "select" | "text" | "arrow" | "redact" | "shape";
@@ -25,17 +25,15 @@ export type ToolOptions = {
   textSize: TextSize;
   arrowHead: ArrowHead;
   arrowWidth: number;
-  redactMode: RedactMode;
   shape: ShapeKind;
 };
 
 export const TEXT_SIZE_ORDER: TextSize[] = ["small", "medium", "large"];
 export const ARROW_HEAD_ORDER: ArrowHead[] = ["filled", "open", "double"];
 export const SHAPE_ORDER: ShapeKind[] = ["rect", "oval", "line"];
-export const REDACT_MODE_ORDER: RedactMode[] = ["pixelate", "solid"];
 
 export function defaultToolOptions(): ToolOptions {
-  return { textSize: "medium", arrowHead: "filled", arrowWidth: ARROW_WIDTHS[1], redactMode: "pixelate", shape: "rect" };
+  return { textSize: "medium", arrowHead: "filled", arrowWidth: ARROW_WIDTHS[1], shape: "rect" };
 }
 
 /** Tool shortcuts: the numbers on the toolbar pills, and the letters of earlier versions. */
@@ -76,6 +74,14 @@ export class AnnotationEditor {
   options: ToolOptions = defaultToolOptions();
   /** Hears every options change, to remember it; set by the owner. */
   onOptionsChange: (options: ToolOptions) => void = () => {};
+  /**
+   * How regions are hidden, shared with automatic redaction: the owner keeps the one
+   * setting and sets it here. `requestRedactMode` asks the owner to change it.
+   */
+  redactMode: RedactMode = "pixelate";
+  requestRedactMode: (mode: RedactMode) => void = (mode) => {
+    this.redactMode = mode;
+  };
   private annotations: Annotation[] = [];
   private selectedId: string | null = null;
   private draft: Annotation | null = null;
@@ -149,7 +155,12 @@ export class AnnotationEditor {
     if (selected?.kind === "text" && changes.textSize) {
       updated = { ...selected, size: TEXT_SIZES[changes.textSize] };
     } else if (selected?.kind === "arrow" && (changes.arrowHead || changes.arrowWidth)) {
-      updated = { ...selected, head: this.options.arrowHead, width: this.options.arrowWidth };
+      // Only the option that was touched changes: the head keeps its width and vice versa.
+      updated = {
+        ...selected,
+        ...(changes.arrowHead ? { head: changes.arrowHead } : {}),
+        ...(changes.arrowWidth ? { width: changes.arrowWidth } : {}),
+      };
     }
     if (updated) {
       const replacement = updated;
@@ -164,7 +175,10 @@ export class AnnotationEditor {
     const { options } = this;
     if (tool === "text") this.setOptions({ textSize: next(TEXT_SIZE_ORDER, options.textSize) });
     else if (tool === "arrow") this.setOptions({ arrowHead: next(ARROW_HEAD_ORDER, options.arrowHead) });
-    else if (tool === "redact") this.setOptions({ redactMode: next(REDACT_MODE_ORDER, options.redactMode) });
+    else if (tool === "redact") {
+      this.requestRedactMode(next(REDACT_MODES, this.redactMode));
+      this.onChange();
+    }
     else if (tool === "shape") this.setOptions({ shape: next(SHAPE_ORDER, options.shape) });
   }
 
@@ -210,6 +224,24 @@ export class AnnotationEditor {
     if (regions.length === 0) return;
     const ids = new Set(regions.map((region) => region.id));
     this.applyToHistory((list) => [...regions, ...list.filter((item) => !ids.has(item.id))]);
+  }
+
+  /** The automatic regions of `category` as they are now: moved, or some deleted. */
+  autoRedactions(category: RedactCategory): PixelateAnnotation[] {
+    return this.annotations.filter(
+      (item): item is PixelateAnnotation => item.kind === "pixelate" && item.auto === category,
+    );
+  }
+
+  /** Hides every automatic region the new way, wherever it is now; nothing is re-added. */
+  setAutoRedactionMode(mode: RedactMode): void {
+    this.applyToHistory((list) =>
+      list.map((item) => {
+        if (item.kind !== "pixelate" || !item.auto) return item;
+        const { mode: _previous, ...rest } = item;
+        return mode === "solid" ? { ...rest, mode } : rest;
+      }),
+    );
   }
 
   removeAutoRedactions(category: RedactCategory): void {
@@ -357,10 +389,9 @@ export class AnnotationEditor {
       return;
     }
 
-    // Arrows and shapes already drawn can be picked up and moved with their own tool.
+    // Drawing tools always draw; annotations move with the selection tool, or with ⌘ held.
     const hit = inside ? hitTest(this.annotations, point, geometry.scale) : undefined;
-    const movable = this.tool === "select" || ((this.tool === "arrow" || this.tool === "shape") && hit && hit.kind !== "pixelate");
-    if (movable) {
+    if (this.tool === "select" || (event.metaKey && hit)) {
       this.selectedId = hit?.id ?? null;
       if (hit) {
         this.canvas.setPointerCapture(event.pointerId);
@@ -429,7 +460,8 @@ export class AnnotationEditor {
 
   private shapeFrom(start: Point, end: Point): Annotation {
     const id = this.draft?.id ?? crypto.randomUUID();
-    const { arrowHead, arrowWidth, redactMode, shape } = this.options;
+    const { arrowHead, arrowWidth, shape } = this.options;
+    const { redactMode } = this;
     if (this.tool === "arrow") {
       return { id, kind: "arrow", color: this.color, from: { ...start }, to: { ...end }, head: arrowHead, width: arrowWidth };
     }
