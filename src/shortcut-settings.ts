@@ -35,7 +35,11 @@ export class ShortcutSettings {
   constructor(
     private readonly list: HTMLUListElement,
     private readonly changed: (entries: ShortcutEntry[]) => void,
-  ) {}
+  ) {
+    // On the document, not the button: WebKit on macOS does not focus a button that is
+    // clicked, so a listener on the recorder itself would never hear the keys.
+    document.addEventListener("keydown", (event) => this.onKey(event), true);
+  }
 
   async load(): Promise<void> {
     this.attemptErrors.clear();
@@ -70,7 +74,6 @@ export class ShortcutSettings {
     recorder.setAttribute("aria-labelledby", name.id);
     recorder.title = "Haz clic y pulsa la nueva combinación";
     recorder.addEventListener("click", () => this.start(entry.kind, recorder));
-    recorder.addEventListener("keydown", (event) => this.onKey(event, entry.kind));
     recorder.addEventListener("blur", () => {
       if (this.recording?.button === recorder) this.cancel();
     });
@@ -96,6 +99,8 @@ export class ShortcutSettings {
     if (this.recording?.button === button) return;
     this.stop();
     this.recording = { kind, button };
+    // Focused explicitly so clicking elsewhere ends the recording through `blur`.
+    button.focus();
     button.textContent = RECORDING_TEXT;
     button.setAttribute("aria-pressed", "true");
     invoke("pause_shortcuts", { paused: true }).catch((error) => {
@@ -104,8 +109,9 @@ export class ShortcutSettings {
     });
   }
 
-  private onKey(event: KeyboardEvent, kind: CaptureKind): void {
-    if (this.recording?.kind !== kind) return;
+  private onKey(event: KeyboardEvent): void {
+    const kind = this.recording?.kind;
+    if (!kind) return;
     event.preventDefault();
     event.stopPropagation();
     const modified = event.metaKey || event.ctrlKey || event.altKey || event.shiftKey;

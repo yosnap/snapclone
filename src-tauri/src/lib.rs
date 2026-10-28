@@ -91,6 +91,7 @@ pub fn run() {
             history::delete_history,
             selector::selector_info,
             selector::selector_frame,
+            selector::selector_ready,
             selector::cancel_selection,
             selector::finish_selection,
             selector::finish_window,

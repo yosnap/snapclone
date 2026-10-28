@@ -46,6 +46,10 @@ async function init(): Promise<void> {
   zoneOnly = info.kind === "scroll";
   setWindowMode(info.kind === "window");
   await listen<boolean>(MODE_EVENT, (event) => setWindowMode(event.payload === true));
+  // Painted now rather than on the next animation frame, which a hidden window may never
+  // get; Rust shows the overlay only after this, so it never appears empty.
+  draw();
+  await invoke("selector_ready");
 }
 
 function setWindowMode(enabled: boolean): void {
