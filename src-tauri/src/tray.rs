@@ -5,7 +5,7 @@ use tauri::{
 };
 
 use crate::{
-    capture::{self, CaptureKind},
+    capture::{self, CaptureAction},
     editor_window, import, ocr,
     shortcuts::ShortcutEntry,
 };
@@ -25,20 +25,16 @@ const QUIT_TITLE: &str = "Salir del todo";
 /// Only a label in the menu bar icon: the editor's page handles ⇧⌘Z, where it is also redo.
 const REOPEN_LABEL: &str = "Shift+Cmd+Z";
 
-/// The capture entries, kept so their shortcuts can be updated when they change.
-struct CaptureItems(Vec<(CaptureKind, MenuItem<Wry>)>);
-
-/// "Capturar zona", "Capturar con scroll"…, from the one name each kind has.
-fn capture_title(kind: CaptureKind) -> String {
-    format!("Capturar {}", kind.label().to_lowercase())
-}
+/// The capture entries, in `CaptureAction::ALL` order like the shortcut list, kept so their
+/// shortcuts can be updated when they change.
+struct CaptureItems(Vec<MenuItem<Wry>>);
 
 pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> {
-    let captures = CaptureKind::ALL
+    let captures = CaptureAction::ALL
         .into_iter()
-        .map(|kind| {
-            let id = format!("{CAPTURE_PREFIX}{}", kind.id());
-            MenuItem::with_id(app, id, capture_title(kind), true, None::<&str>).map(|item| (kind, item))
+        .map(|action| {
+            let id = format!("{CAPTURE_PREFIX}{}", action.id());
+            MenuItem::with_id(app, id, action.menu_title(), true, None::<&str>)
         })
         .collect::<tauri::Result<Vec<_>>>()?;
     let clipboard_item = MenuItem::with_id(app, CLIPBOARD_ID, "Abrir desde el portapapeles", true, None::<&str>)?;
@@ -53,7 +49,7 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
     let separator = PredefinedMenuItem::separator(app)?;
 
     let menu = Menu::new(app)?;
-    for (_, item) in &captures {
+    for item in &captures {
         menu.append(item)?;
     }
     menu.append_items(&[&separator, &clipboard_item, &file_item, &reopen_item, &text_menu, &separator, &open_item, &settings_item, &separator, &hide_item, &quit_item])?;
@@ -74,7 +70,7 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
 /// Shows each capture entry's current shortcut next to it.
 pub fn show_shortcuts(app: &AppHandle, shortcuts: &[ShortcutEntry]) {
     let Some(items) = app.try_state::<CaptureItems>() else { return };
-    for ((_, item), entry) in items.0.iter().zip(shortcuts) {
+    for (item, entry) in items.0.iter().zip(shortcuts) {
         if let Err(error) = item.set_accelerator(entry.shortcut.as_deref()) {
             eprintln!("menu shortcut could not be shown: {error}");
         }
@@ -83,8 +79,8 @@ pub fn show_shortcuts(app: &AppHandle, shortcuts: &[ShortcutEntry]) {
 
 /// Menu event listeners are global in Tauri: this one handles the tray and the app menu.
 pub fn on_menu_event(app: &AppHandle, id: &str) {
-    if let Some(kind) = id.strip_prefix(CAPTURE_PREFIX).and_then(CaptureKind::from_id) {
-        capture::start(app.clone(), kind);
+    if let Some(action) = id.strip_prefix(CAPTURE_PREFIX).and_then(CaptureAction::from_id) {
+        capture::start(app.clone(), action);
         return;
     }
     match id {

@@ -6,6 +6,7 @@ mod editor_window;
 mod export;
 mod geometry;
 mod history;
+mod hud;
 mod images;
 mod ocr;
 mod output;
@@ -81,6 +82,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             capture::start_capture,
+            capture::copy_finished,
             export::copy_png,
             export::choose_save_path,
             export::save_image,

@@ -1,13 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { shortcutFromEvent } from "./shortcut-keys";
 
-type CaptureKind = "region" | "window" | "screen" | "scroll";
+/** What a shortcut does, as Rust names it (`CaptureAction`). */
+export type CaptureAction = "region" | "region-copy" | "window" | "screen" | "scroll";
 /**
- * As Rust reports it: `name` is the capture kind as the user reads it, `label` the shortcut
+ * As Rust reports it: `name` is the capture action as the user reads it, `label` the shortcut
  * as macOS shows it and `error` a failed registration.
  */
 export type ShortcutEntry = {
-  kind: CaptureKind;
+  action: CaptureAction;
   name: string;
   shortcut: string | null;
   label: string | null;
@@ -21,15 +22,15 @@ const RECORDING_TEXT = "Pulsa la combinación…";
 const EMPTY_TEXT = "Sin atajo";
 
 /**
- * One row per capture kind with a shortcut recorder. Recording pauses every global shortcut
+ * One row per capture action with a shortcut recorder. Recording pauses every global shortcut
  * in Rust, so pressing one of them reaches the recorder instead of starting a capture.
  * Validation and registration happen in Rust; its error is shown on the row.
  */
 export class ShortcutSettings {
   private entries: ShortcutEntry[] = [];
   /** Errors from the last change attempt, which Rust does not keep. */
-  private readonly attemptErrors = new Map<CaptureKind, string>();
-  private recording: { kind: CaptureKind; button: HTMLButtonElement } | null = null;
+  private readonly attemptErrors = new Map<CaptureAction, string>();
+  private recording: { action: CaptureAction; button: HTMLButtonElement } | null = null;
 
   /** `changed` hears about every shortcut list shown, so other views can follow it. */
   constructor(
@@ -64,7 +65,7 @@ export class ShortcutSettings {
 
     const name = document.createElement("span");
     name.textContent = entry.name;
-    name.id = `shortcut-${entry.kind}`;
+    name.id = `shortcut-${entry.action}`;
 
     const recorder = document.createElement("button");
     recorder.type = "button";
@@ -73,7 +74,7 @@ export class ShortcutSettings {
     recorder.setAttribute("aria-pressed", "false");
     recorder.setAttribute("aria-labelledby", name.id);
     recorder.title = "Haz clic y pulsa la nueva combinación";
-    recorder.addEventListener("click", () => this.start(entry.kind, recorder));
+    recorder.addEventListener("click", () => this.start(entry.action, recorder));
     recorder.addEventListener("blur", () => {
       if (this.recording?.button === recorder) this.cancel();
     });
@@ -84,21 +85,21 @@ export class ShortcutSettings {
     clear.textContent = "Borrar";
     clear.title = `Quitar el atajo de «${entry.name}»`;
     clear.disabled = entry.shortcut === null;
-    clear.addEventListener("click", () => this.assign(entry.kind, null));
+    clear.addEventListener("click", () => this.assign(entry.action, null));
 
     const error = document.createElement("p");
     error.className = "shortcut-error";
-    error.textContent = this.attemptErrors.get(entry.kind) ?? entry.error ?? "";
+    error.textContent = this.attemptErrors.get(entry.action) ?? entry.error ?? "";
     error.hidden = !error.textContent;
 
     row.append(name, recorder, clear, error);
     return row;
   }
 
-  private start(kind: CaptureKind, button: HTMLButtonElement): void {
+  private start(action: CaptureAction, button: HTMLButtonElement): void {
     if (this.recording?.button === button) return;
     this.stop();
-    this.recording = { kind, button };
+    this.recording = { action, button };
     // Focused explicitly so clicking elsewhere ends the recording through `blur`.
     button.focus();
     button.textContent = RECORDING_TEXT;
@@ -110,8 +111,8 @@ export class ShortcutSettings {
   }
 
   private onKey(event: KeyboardEvent): void {
-    const kind = this.recording?.kind;
-    if (!kind) return;
+    const action = this.recording?.action;
+    if (!action) return;
     event.preventDefault();
     event.stopPropagation();
     const modified = event.metaKey || event.ctrlKey || event.altKey || event.shiftKey;
@@ -120,14 +121,14 @@ export class ShortcutSettings {
       return;
     }
     const shortcut = shortcutFromEvent(event);
-    if (shortcut) void this.assign(kind, shortcut);
+    if (shortcut) void this.assign(action, shortcut);
   }
 
   private cancel(): void {
     const recording = this.recording;
     this.recording = null;
     if (recording) {
-      const entry = this.entries.find((item) => item.kind === recording.kind);
+      const entry = this.entries.find((item) => item.action === recording.action);
       recording.button.textContent = entry?.label ?? EMPTY_TEXT;
       recording.button.setAttribute("aria-pressed", "false");
     }
@@ -135,14 +136,14 @@ export class ShortcutSettings {
   }
 
   /** Saves a new shortcut (or clears it with `null`); on failure the previous one is kept. */
-  private async assign(kind: CaptureKind, shortcut: string | null): Promise<void> {
+  private async assign(action: CaptureAction, shortcut: string | null): Promise<void> {
     this.recording = null;
     try {
-      const entries = await invoke<ShortcutEntry[]>("set_shortcut", { kind, shortcut });
-      this.attemptErrors.delete(kind);
+      const entries = await invoke<ShortcutEntry[]>("set_shortcut", { action, shortcut });
+      this.attemptErrors.delete(action);
       this.render(entries);
     } catch (error) {
-      this.attemptErrors.set(kind, String(error));
+      this.attemptErrors.set(action, String(error));
       try {
         this.render(await loadShortcuts());
       } catch (reloadError) {

@@ -86,6 +86,17 @@ pub fn toolbar_position(zone: Rect, monitor: Rect, others: &[Rect], width: u32, 
         .unwrap_or_else(|| low_on(monitor))
 }
 
+/// Places a square bezel of `size` like the macOS volume one: centred across `area` (the
+/// work area of the monitor under the pointer) and in its lower third, centred there when it
+/// fits and otherwise kept inside the area.
+pub fn bezel(area: Rect, size: u32) -> Rect {
+    let x = i64::from(area.x) + (i64::from(area.width) - i64::from(size)) / 2;
+    let centre_y = i64::from(area.y) + i64::from(area.height) * 5 / 6;
+    let max_y = (area.bottom() - i64::from(size)).max(i64::from(area.y));
+    let y = (centre_y - i64::from(size) / 2).clamp(i64::from(area.y), max_y);
+    Rect::new(x.max(i64::from(area.x)) as i32, y as i32, size, size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +152,22 @@ mod tests {
     fn single_full_screen_zone_falls_back_to_overlapping() {
         let spot = toolbar_position(MAIN, MAIN, &[], 400, 44, 8);
         assert!(MAIN.contains(&spot));
+    }
+
+    #[test]
+    fn bezel_sits_centred_in_the_lower_third() {
+        let area = Rect::new(0, 25, 1440, 875);
+        let spot = bezel(area, 180);
+        assert_eq!(spot, Rect::new(630, 664, 180, 180));
+        assert!(area.contains(&spot));
+        assert!(i64::from(spot.y) >= i64::from(area.y) + i64::from(area.height) * 2 / 3);
+        // On a monitor to the left and lower down, it follows that monitor.
+        assert_eq!(bezel(LEFT, 180), Rect::new(-1370, 1170, 180, 180));
+    }
+
+    #[test]
+    fn bezel_stays_inside_a_short_area() {
+        let area = Rect::new(0, 0, 300, 200);
+        assert_eq!(bezel(area, 180), Rect::new(60, 20, 180, 180));
     }
 }
