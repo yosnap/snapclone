@@ -47,6 +47,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt"
+    },
     "category": "Productivity",
     "copyright": "© 2026 yosnap. Licencia MIT.",
     "shortDescription": "Capturas de pantalla embellecidas",
