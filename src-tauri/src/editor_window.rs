@@ -35,6 +35,16 @@ pub fn show(app: &AppHandle, recenter: bool) {
     let _ = window.set_focus();
 }
 
+/// Puts the editor back on screen where it was, without focusing it or activating the app,
+/// like the Preferences window after a capture.
+pub fn show_without_focus(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(EDITOR_WINDOW)
+        && let Err(error) = window.show()
+    {
+        eprintln!("editor window could not be shown: {error}");
+    }
+}
+
 /// Hides the editor; the app keeps running in the menu bar and the Dock.
 pub fn hide(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {

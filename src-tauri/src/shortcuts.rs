@@ -1,4 +1,4 @@
-//! One global shortcut per capture kind. They are saved in `settings.json` and re-registered
+//! One global shortcut per capture action. They are saved in `settings.json` and re-registered
 //! at once when changed; parsing and validation are pure so they are tested without the OS.
 //! Every command here is synchronous, so it runs on the main thread like the shortcut
 //! handler and the registry calls, and nothing can interleave with a change in progress.
@@ -13,7 +13,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
-use crate::{capture::{self, CaptureKind}, prefs, tray};
+use crate::{capture::{self, CaptureAction}, prefs, tray};
 
 const SHORTCUTS_KEY: &str = "shortcuts";
 /// The system screenshot shortcuts, which macOS keeps for itself.
@@ -30,18 +30,21 @@ const MODIFIERS: [(Modifiers, &str, &str); 4] = [
     (Modifiers::SUPER, "Cmd", "⌘"),
 ];
 
-/// Zone uses ⌃⌥⌘5 like the original Xnapper; the rest are ⇧⌘ plus a digit.
-fn default_shortcut(kind: CaptureKind) -> Shortcut {
-    let key = match kind {
-        CaptureKind::Region => return Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER), Code::Digit5),
-        CaptureKind::Window => Code::Digit7,
-        CaptureKind::Screen => Code::Digit8,
-        CaptureKind::Scroll => Code::Digit9,
+/// Like the original Xnapper: a zone opens in the editor with ⌃⌥⌘4 and is copied with
+/// ⌃⌥⌘5; the rest are ⇧⌘ plus a digit.
+fn default_shortcut(action: CaptureAction) -> Shortcut {
+    let zone = |key| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER), key);
+    let key = match action {
+        CaptureAction::Region => return zone(Code::Digit4),
+        CaptureAction::RegionCopy => return zone(Code::Digit5),
+        CaptureAction::Window => Code::Digit7,
+        CaptureAction::Screen => Code::Digit8,
+        CaptureAction::Scroll => Code::Digit9,
     };
     Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), key)
 }
 
-type Assigned = HashMap<CaptureKind, Option<Shortcut>>;
+type Assigned = HashMap<CaptureAction, Option<Shortcut>>;
 
 #[derive(Default)]
 pub struct Shortcuts(Mutex<Registry>);
@@ -50,17 +53,17 @@ pub struct Shortcuts(Mutex<Registry>);
 struct Registry {
     assigned: Assigned,
     /// Shortcuts that are saved but could not be registered, with the reason.
-    failed: HashMap<CaptureKind, String>,
+    failed: HashMap<CaptureAction, String>,
     /// While the settings record a new combination nothing is registered, so the keys reach
     /// the recorder instead of starting a capture.
     paused: bool,
 }
 
-/// What the settings and the menu show for one capture kind.
+/// What the settings and the menu show for one capture action.
 #[derive(Clone, Serialize)]
 pub struct ShortcutEntry {
-    kind: CaptureKind,
-    /// The capture kind as the user reads it, from `CaptureKind::label`.
+    action: CaptureAction,
+    /// The capture action as the user reads it, from `CaptureAction::label`.
     name: &'static str,
     /// Stored form, e.g. `Shift+Cmd+Digit2`, which the menu also takes as its accelerator.
     pub shortcut: Option<String>,
@@ -138,50 +141,63 @@ pub fn parse(text: &str) -> Result<Shortcut, String> {
     Ok(shortcut)
 }
 
-/// Rejects the system screenshot shortcuts and any shortcut another capture kind already has.
-pub fn validate(kind: CaptureKind, candidate: &Shortcut, assigned: &Assigned) -> Result<(), String> {
+/// Rejects the system screenshot shortcuts and any shortcut another capture action already has.
+pub fn validate(action: CaptureAction, candidate: &Shortcut, assigned: &Assigned) -> Result<(), String> {
     if RESERVED.iter().any(|&(mods, key)| candidate.mods == mods && candidate.key == key) {
         return Err(format!("{} está reservado por macOS para sus capturas de pantalla", label(candidate)));
     }
-    let taken = CaptureKind::ALL
+    let taken = CaptureAction::ALL
         .into_iter()
-        .find(|other| *other != kind && assigned.get(other).copied().flatten().is_some_and(|used| used.id() == candidate.id()));
+        .find(|other| *other != action && assigned.get(other).copied().flatten().is_some_and(|used| used.id() == candidate.id()));
     match taken {
         Some(other) => Err(format!("{} ya se usa para «{}»", label(candidate), other.label())),
         None => Ok(()),
     }
 }
 
-/// Reads the saved shortcuts. A kind missing from the file gets its default; `null` means
-/// the user cleared it. An invalid entry falls back to the default; one that clashes with
-/// an earlier kind is dropped.
+/// Reads the saved shortcuts. An action missing from the file gets its default; `null` means
+/// the user cleared it. An invalid entry falls back to the default. A saved choice always
+/// wins: the saved ones are taken first, and a default that clashes with one of them (say a
+/// zone shortcut saved as ⌃⌥⌘5 before the copy action existed) is dropped, like a saved one
+/// that clashes with an earlier action.
 fn load(saved: Option<HashMap<String, Option<String>>>) -> Assigned {
     let saved = saved.unwrap_or_default();
+    let candidates: Vec<(CaptureAction, bool, Option<Shortcut>)> = CaptureAction::ALL
+        .into_iter()
+        .map(|action| match saved.get(action.id()) {
+            None => (action, false, Some(default_shortcut(action))),
+            Some(None) => (action, true, None),
+            Some(Some(text)) => {
+                let shortcut = parse(text).unwrap_or_else(|error| {
+                    eprintln!("saved shortcut {text:?} for {} is invalid: {error}", action.id());
+                    default_shortcut(action)
+                });
+                (action, true, Some(shortcut))
+            }
+        })
+        .collect();
     let mut assigned = Assigned::new();
-    for kind in CaptureKind::ALL {
-        let candidate = match saved.get(kind.id()) {
-            None => Some(default_shortcut(kind)),
-            Some(None) => None,
-            Some(Some(text)) => Some(parse(text).unwrap_or_else(|error| {
-                eprintln!("saved shortcut {text:?} for {} is invalid: {error}", kind.id());
-                default_shortcut(kind)
-            })),
-        };
-        let usable = candidate.filter(|shortcut| validate(kind, shortcut, &assigned).is_ok());
-        assigned.insert(kind, usable);
+    for pass_saved in [true, false] {
+        for (action, is_saved, candidate) in &candidates {
+            if *is_saved != pass_saved {
+                continue;
+            }
+            let usable = candidate.filter(|shortcut| validate(*action, shortcut, &assigned).is_ok());
+            assigned.insert(*action, usable);
+        }
     }
     assigned
 }
 
 /// Registers every assigned shortcut, returning those the system refused.
-fn register_all(app: &AppHandle, assigned: &Assigned) -> HashMap<CaptureKind, String> {
+fn register_all(app: &AppHandle, assigned: &Assigned) -> HashMap<CaptureAction, String> {
     let manager = app.global_shortcut();
     let mut failed = HashMap::new();
-    for kind in CaptureKind::ALL {
-        let Some(shortcut) = assigned.get(&kind).copied().flatten() else { continue };
+    for action in CaptureAction::ALL {
+        let Some(shortcut) = assigned.get(&action).copied().flatten() else { continue };
         if let Err(error) = manager.register(shortcut) {
             eprintln!("shortcut {} could not be registered: {error}", canonical(&shortcut));
-            failed.insert(kind, format!("No se pudo registrar {}: puede que otra app ya lo use", label(&shortcut)));
+            failed.insert(action, format!("No se pudo registrar {}: puede que otra app ya lo use", label(&shortcut)));
         }
     }
     failed
@@ -194,16 +210,16 @@ fn unregister_all(app: &AppHandle) {
 }
 
 fn entries(registry: &Registry) -> Vec<ShortcutEntry> {
-    CaptureKind::ALL
+    CaptureAction::ALL
         .into_iter()
-        .map(|kind| {
-            let shortcut = registry.assigned.get(&kind).copied().flatten();
+        .map(|action| {
+            let shortcut = registry.assigned.get(&action).copied().flatten();
             ShortcutEntry {
-                kind,
-                name: kind.label(),
+                action,
+                name: action.label(),
                 shortcut: shortcut.as_ref().map(canonical),
                 label: shortcut.as_ref().map(label),
-                error: registry.failed.get(&kind).cloned(),
+                error: registry.failed.get(&action).cloned(),
             }
         })
         .collect()
@@ -219,20 +235,20 @@ pub fn init(app: &AppHandle) -> Vec<ShortcutEntry> {
     entries(&registry)
 }
 
-/// Starts the capture kind a pressed shortcut belongs to.
+/// Starts the capture action a pressed shortcut belongs to.
 pub fn on_shortcut(app: &AppHandle, shortcut: &Shortcut) {
-    let kind = {
+    let action = {
         let state = app.state::<Shortcuts>();
         let registry = state.0.lock().unwrap();
         if registry.paused {
             return;
         }
-        CaptureKind::ALL
+        CaptureAction::ALL
             .into_iter()
-            .find(|kind| registry.assigned.get(kind).copied().flatten().is_some_and(|used| used.id() == shortcut.id()))
+            .find(|action| registry.assigned.get(action).copied().flatten().is_some_and(|used| used.id() == shortcut.id()))
     };
-    if let Some(kind) = kind {
-        capture::start(app.clone(), kind);
+    if let Some(action) = action {
+        capture::start(app.clone(), action);
     }
 }
 
@@ -241,23 +257,23 @@ pub fn get_shortcuts(state: State<'_, Shortcuts>) -> Vec<ShortcutEntry> {
     entries(&state.0.lock().unwrap())
 }
 
-/// Assigns (or clears, with `None`) the shortcut of a capture kind. The old one is released
+/// Assigns (or clears, with `None`) the shortcut of a capture action. The old one is released
 /// and the new one registered; if the system refuses it, the previous shortcuts are restored
 /// and the error is returned. Registering also ends a pause.
 #[tauri::command]
-pub fn set_shortcut(app: AppHandle, kind: CaptureKind, shortcut: Option<String>) -> Result<Vec<ShortcutEntry>, String> {
+pub fn set_shortcut(app: AppHandle, action: CaptureAction, shortcut: Option<String>) -> Result<Vec<ShortcutEntry>, String> {
     let candidate = shortcut.as_deref().map(parse).transpose()?;
     let state = app.state::<Shortcuts>();
     let previous = state.0.lock().unwrap().assigned.clone();
     if let Some(candidate) = &candidate {
-        validate(kind, candidate, &previous)?;
+        validate(action, candidate, &previous)?;
     }
     let mut next = previous.clone();
-    next.insert(kind, candidate);
+    next.insert(action, candidate);
 
     unregister_all(&app);
     let mut failed = register_all(&app, &next);
-    if let Some(error) = failed.remove(&kind) {
+    if let Some(error) = failed.remove(&action) {
         unregister_all(&app);
         let restored = register_all(&app, &previous);
         let mut registry = state.0.lock().unwrap();
@@ -267,7 +283,7 @@ pub fn set_shortcut(app: AppHandle, kind: CaptureKind, shortcut: Option<String>)
     }
 
     let saved: HashMap<&str, Option<String>> =
-        next.iter().map(|(kind, shortcut)| (kind.id(), shortcut.as_ref().map(canonical))).collect();
+        next.iter().map(|(action, shortcut)| (action.id(), shortcut.as_ref().map(canonical))).collect();
     let list = {
         let mut registry = state.0.lock().unwrap();
         *registry = Registry { assigned: next, failed, paused: false };
@@ -320,14 +336,26 @@ mod tests {
         load(None)
     }
 
+    fn text(assigned: &Assigned, action: CaptureAction) -> Option<String> {
+        assigned[&action].as_ref().map(canonical)
+    }
+
     #[test]
-    fn defaults_are_ctrl_alt_cmd_five_then_cmd_shift_seven_eight_nine() {
+    fn defaults_follow_xnapper_then_cmd_shift_seven_eight_nine() {
         let assigned = defaults();
-        let text = |kind| assigned[&kind].as_ref().map(canonical);
-        assert_eq!(text(CaptureKind::Region).as_deref(), Some("Ctrl+Alt+Cmd+Digit5"));
-        assert_eq!(text(CaptureKind::Window).as_deref(), Some("Shift+Cmd+Digit7"));
-        assert_eq!(text(CaptureKind::Screen).as_deref(), Some("Shift+Cmd+Digit8"));
-        assert_eq!(text(CaptureKind::Scroll).as_deref(), Some("Shift+Cmd+Digit9"));
+        assert_eq!(text(&assigned, CaptureAction::Region).as_deref(), Some("Ctrl+Alt+Cmd+Digit4"));
+        assert_eq!(text(&assigned, CaptureAction::RegionCopy).as_deref(), Some("Ctrl+Alt+Cmd+Digit5"));
+        assert_eq!(text(&assigned, CaptureAction::Window).as_deref(), Some("Shift+Cmd+Digit7"));
+        assert_eq!(text(&assigned, CaptureAction::Screen).as_deref(), Some("Shift+Cmd+Digit8"));
+        assert_eq!(text(&assigned, CaptureAction::Scroll).as_deref(), Some("Shift+Cmd+Digit9"));
+    }
+
+    #[test]
+    fn action_ids_match_their_serialized_form() {
+        for action in CaptureAction::ALL {
+            assert_eq!(serde_json::to_value(action).unwrap(), action.id());
+            assert_eq!(CaptureAction::from_id(action.id()), Some(action));
+        }
     }
 
     #[test]
@@ -351,18 +379,20 @@ mod tests {
     #[test]
     fn system_screenshot_shortcuts_are_reserved() {
         for key in ["Digit3", "Digit4", "Digit5"] {
-            let error = validate(CaptureKind::Region, &shortcut(&format!("Cmd+Shift+{key}")), &defaults()).unwrap_err();
+            let error = validate(CaptureAction::Region, &shortcut(&format!("Cmd+Shift+{key}")), &defaults()).unwrap_err();
             assert!(error.contains("reservado"), "{error}");
         }
-        assert!(validate(CaptureKind::Region, &shortcut("Cmd+Alt+Digit3"), &defaults()).is_ok());
+        assert!(validate(CaptureAction::Region, &shortcut("Cmd+Alt+Digit3"), &defaults()).is_ok());
     }
 
     #[test]
-    fn a_shortcut_used_by_another_kind_conflicts() {
-        let error = validate(CaptureKind::Region, &shortcut("Shift+Cmd+Digit7"), &defaults()).unwrap_err();
-        assert_eq!(error, "⇧⌘7 ya se usa para «Ventana»");
-        // Re-assigning a kind its own shortcut is fine.
-        assert!(validate(CaptureKind::Window, &shortcut("Shift+Cmd+Digit7"), &defaults()).is_ok());
+    fn a_shortcut_used_by_another_action_conflicts() {
+        let error = validate(CaptureAction::Region, &shortcut("Shift+Cmd+Digit7"), &defaults()).unwrap_err();
+        assert_eq!(error, "⇧⌘7 ya se usa para «Capturar ventana»");
+        let error = validate(CaptureAction::Region, &shortcut("Ctrl+Alt+Cmd+Digit5"), &defaults()).unwrap_err();
+        assert_eq!(error, "⌃⌥⌘5 ya se usa para «Capturar y copiar al portapapeles»");
+        // Re-assigning an action its own shortcut is fine.
+        assert!(validate(CaptureAction::Window, &shortcut("Shift+Cmd+Digit7"), &defaults()).is_ok());
     }
 
     #[test]
@@ -370,23 +400,38 @@ mod tests {
         let saved = HashMap::from([
             ("region".to_string(), Some("Alt+Cmd+KeyR".to_string())),
             ("window".to_string(), None),
-            // Saved before ⌃⌥⌘5 became the zone default: a saved choice always wins.
             ("screen".to_string(), Some("garbage".to_string())),
             // Clashes with the region shortcut above, so it is dropped.
             ("scroll".to_string(), Some("Alt+Cmd+KeyR".to_string())),
         ]);
         let assigned = load(Some(saved));
-        assert_eq!(assigned[&CaptureKind::Region].as_ref().map(canonical).as_deref(), Some("Alt+Cmd+KeyR"));
-        assert_eq!(assigned[&CaptureKind::Window], None);
-        assert_eq!(assigned[&CaptureKind::Screen], Some(default_shortcut(CaptureKind::Screen)));
-        assert_eq!(assigned[&CaptureKind::Scroll], None);
+        assert_eq!(text(&assigned, CaptureAction::Region).as_deref(), Some("Alt+Cmd+KeyR"));
+        assert_eq!(assigned[&CaptureAction::Window], None);
+        assert_eq!(assigned[&CaptureAction::Screen], Some(default_shortcut(CaptureAction::Screen)));
+        assert_eq!(assigned[&CaptureAction::Scroll], None);
+        assert_eq!(assigned[&CaptureAction::RegionCopy], Some(default_shortcut(CaptureAction::RegionCopy)));
     }
 
     #[test]
     fn an_old_saved_zone_shortcut_is_kept() {
         let saved = HashMap::from([("region".to_string(), Some("Shift+Cmd+Digit2".to_string()))]);
         let assigned = load(Some(saved));
-        assert_eq!(assigned[&CaptureKind::Region].as_ref().map(canonical).as_deref(), Some("Shift+Cmd+Digit2"));
-        assert_eq!(assigned[&CaptureKind::Window], Some(default_shortcut(CaptureKind::Window)));
+        assert_eq!(text(&assigned, CaptureAction::Region).as_deref(), Some("Shift+Cmd+Digit2"));
+        assert_eq!(assigned[&CaptureAction::Window], Some(default_shortcut(CaptureAction::Window)));
+    }
+
+    #[test]
+    fn a_saved_choice_beats_the_copy_default() {
+        // Saved when ⌃⌥⌘5 was the zone default: the zone keeps it and copying gets none.
+        let saved = HashMap::from([("region".to_string(), Some("Ctrl+Alt+Cmd+Digit5".to_string()))]);
+        let assigned = load(Some(saved));
+        assert_eq!(text(&assigned, CaptureAction::Region).as_deref(), Some("Ctrl+Alt+Cmd+Digit5"));
+        assert_eq!(assigned[&CaptureAction::RegionCopy], None);
+
+        // A later action's saved choice also wins over an earlier action's default.
+        let saved = HashMap::from([("scroll".to_string(), Some("Ctrl+Alt+Cmd+Digit4".to_string()))]);
+        let assigned = load(Some(saved));
+        assert_eq!(text(&assigned, CaptureAction::Scroll).as_deref(), Some("Ctrl+Alt+Cmd+Digit4"));
+        assert_eq!(assigned[&CaptureAction::Region], None);
     }
 }

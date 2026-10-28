@@ -12,8 +12,10 @@ import {
   toPixelateAnnotations,
 } from "./auto-redact";
 import { type BalanceResult, analyzeBalance, balancedCanvas, readPixels } from "./balance";
+import { copyCapture } from "./capture-copy";
 import { type CaptureDocument, parseCaptureDocument } from "./capture-document";
 import { DocumentSaver } from "./document-saver";
+import { showZoneShortcuts } from "./empty-hint";
 import { BottomBar } from "./bottom-bar";
 import { copyToClipboard, prepareExport, quickSave, saveToFile } from "./export";
 import { HistoryView, type OpenedCapture, captureUrl } from "./history-view";
@@ -35,7 +37,8 @@ import { isEditableTarget } from "./ui-helpers";
 import { requestWallpaper, wallpaperError } from "./wallpaper";
 import { Zoom } from "./zoom";
 
-type CaptureReady = { id: string; scale: number };
+/** `copy`: style and copy it without showing the editor ("Capturar zona y copiar"). */
+type CaptureReady = { id: string; scale: number; copy?: boolean };
 
 fillIcons();
 const canvas = document.querySelector<HTMLCanvasElement>("#editor-canvas")!;
@@ -80,6 +83,8 @@ let detectedRegions: PixelateAnnotation[] = [];
 let detectedFor: string | null = null;
 /** Capture whose text is being analysed; exports wait for it so nothing leaves unredacted. */
 let detectingFor: string | null = null;
+/** Automatic redaction of the capture just opened; resolves false if it could not run. */
+let autoRedaction: Promise<boolean> = Promise.resolve(true);
 const SEARCHING_MESSAGE = "Buscando datos sensibles…";
 let renderQueued = false;
 let exporting = false;
@@ -212,7 +217,7 @@ function showImage(image: HTMLImageElement, scale: number, id: string, saved: Ca
   requireWallpaper();
   // Skip Vision entirely while every category is off; enabling one runs it on demand.
   showFound(0);
-  if (!outsideTauri && anyRedaction()) runAutoRedaction(id);
+  autoRedaction = !outsideTauri && anyRedaction() ? runAutoRedaction(id) : Promise.resolve(true);
   scheduleRender();
 }
 
@@ -371,8 +376,9 @@ function setRedactMode(mode: RedactMode): void {
   editor.setAutoRedactionMode(mode);
 }
 
-async function runAutoRedaction(id: string): Promise<void> {
-  if (detectedFor === id || detectingFor === id) return;
+/** Resolves true once the regions found are on the capture. */
+async function runAutoRedaction(id: string): Promise<boolean> {
+  if (detectedFor === id || detectingFor === id) return detectedFor === id;
   detectingFor = id;
   syncExportButtons();
   showFound(null);
@@ -380,7 +386,7 @@ async function runAutoRedaction(id: string): Promise<void> {
   try {
     const regions: SensitiveRegion[] = await detectSensitive(id);
     // A newer capture may have replaced this one while Vision was running.
-    if (id !== captureId || !original) return;
+    if (id !== captureId || !original) return false;
     detectedRegions = toPixelateAnnotations(regions, original.width, original.height, original.scale);
     detectedFor = id;
     showFound(detectedRegions.length);
@@ -390,8 +396,10 @@ async function runAutoRedaction(id: string): Promise<void> {
     if (status.textContent === SEARCHING_MESSAGE) {
       showStatus(enabled.length > 0 ? `Tachados automáticamente: ${enabled.length}` : "");
     }
+    return true;
   } catch (error) {
     if (id === captureId) showStatus(`No se pudo analizar el texto, revisa la captura antes de compartirla: ${error}`, true);
+    return false;
   } finally {
     if (detectingFor === id) detectingFor = null;
     if (id === captureId && detectedFor !== id) showFound(0);
@@ -419,13 +427,23 @@ function showStatus(message: string, isError = false): void {
   }
 }
 
-/** Renders synchronously before exporting, so a pending frame never leaks into the output. */
-async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string | null>, failure: string): Promise<boolean> {
-  if (!capture || exporting) return false;
-  if (detectingFor === captureId) {
-    showStatus("Espera a que termine la búsqueda de datos sensibles", true);
+/**
+ * Renders synchronously before exporting, so a pending frame never leaks into the output.
+ * `failed` also hears why it did not export, including the cases the status line skips.
+ */
+async function exportWith(
+  action: (canvas: HTMLCanvasElement) => Promise<string | null>,
+  failure: string,
+  failed?: (message: string) => void,
+): Promise<boolean> {
+  const fail = (message: string, shown = true) => {
+    if (shown) showStatus(message, true);
+    failed?.(message);
     return false;
-  }
+  };
+  if (!capture) return fail(`${failure}: no hay ninguna captura abierta`, false);
+  if (exporting) return fail(`${failure}: ya se está exportando la imagen`, false);
+  if (detectingFor === captureId) return fail("Espera a que termine la búsqueda de datos sensibles");
   exporting = true;
   try {
     // Never export the stand-in gradient: wait for the picture, or say why there is none.
@@ -433,8 +451,7 @@ async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string 
       try {
         await requestWallpaper();
       } catch (error) {
-        showStatus(`No se ha exportado: el fondo de escritorio no está disponible (${wallpaperError(error)})`, true);
-        return false;
+        return fail(`No se ha exportado: el fondo de escritorio no está disponible (${wallpaperError(error)})`);
       }
     }
     render(canvas, capture, style, editor.overlay(false));
@@ -442,20 +459,22 @@ async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string 
     if (message) showStatus(message);
     return true;
   } catch (error) {
-    showStatus(`${failure}: ${error}`, true);
-    return false;
+    return fail(`${failure}: ${error}`);
   } finally {
     exporting = false;
     scheduleRender(false);
   }
 }
 
-const copy = () =>
-  exportWith(async (target) => {
-    await copyToClipboard(target);
-    return "Copiada al portapapeles";
-  }, "No se pudo copiar");
-
+const copy = (failed?: (message: string) => void) =>
+  exportWith(
+    async (target) => {
+      await copyToClipboard(target);
+      return "Copiada al portapapeles";
+    },
+    "No se pudo copiar",
+    failed,
+  );
 
 const saveAs = () =>
   exportWith(async (target) => ((await saveToFile(target)) ? "Imagen guardada" : null), "No se pudo guardar");
@@ -634,18 +653,7 @@ const historyView = new HistoryView({
 
 const textView = new TextView();
 
-/** The empty editor names the zone shortcut as it is configured right now. */
-function showZoneShortcut(entries: ShortcutEntry[]): void {
-  const hint = document.querySelector<HTMLElement>("#empty-hint")!;
-  const zone = entries.find((entry) => entry.kind === "region");
-  if (!zone?.label) {
-    hint.textContent = "La captura de zona no tiene atajo: usa el botón o el icono de la barra de menús.";
-    return;
-  }
-  const key = document.createElement("kbd");
-  key.textContent = zone.label;
-  hint.replaceChildren("Pulsa ", key, " o usa el icono de la barra de menús.");
-}
+const showZoneShortcut = (entries: ShortcutEntry[]) => showZoneShortcuts(document.querySelector("#empty-hint")!, entries);
 
 /** The Preferences window, opened by Rust like "Ajustes…" in the menus. */
 function openSettings(): void {
@@ -715,10 +723,15 @@ if (!outsideTauri) {
   loadShortcuts()
     .then(showZoneShortcut)
     .catch((error) => console.error("shortcuts could not be read", error));
-  listen<CaptureReady>("capture-ready", (event) => {
+  listen<CaptureReady>("capture-ready", ({ payload }) => {
     historyView.close();
     textView.close();
-    loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
+    if (payload.copy) {
+      const hooks = { load: () => loadCapture(payload), redacted: () => autoRedaction, copy };
+      void copyCapture(payload.id, hooks);
+      return;
+    }
+    loadCapture(payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
   listenNotices(showStatus);
   bindReopen((id) => {

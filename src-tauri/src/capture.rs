@@ -13,11 +13,14 @@ use xcap::image::RgbaImage;
 
 use crate::{
     app_settings::{self, Toggle},
-    editor_window, history, images, screen, selector, wallpaper,
+    editor_window, history, hud, images, screen, selector, wallpaper,
 };
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
 const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
+/// How long the hidden editor has to style and copy a capture before it is shown instead.
+/// Generous, since detecting sensitive text in a large capture takes a few seconds.
+const COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub const EDITOR_WINDOW: &str = "main";
 const READY_EVENT: &str = "capture-ready";
@@ -35,6 +38,11 @@ pub struct Captures {
     in_progress: AtomicBool,
     /// The windows hidden for the capture in progress, shown again when it ends.
     hidden: Mutex<Option<HiddenWindows>>,
+    /// Whether the capture in progress is copied instead of opened in the editor. Set only
+    /// by the capture that owns `in_progress`, and cleared when it ends.
+    copying: AtomicBool,
+    /// The capture the hidden editor is copying, until it reports back or runs out of time.
+    pending_copy: Mutex<Option<String>>,
 }
 
 /// Which of Snapclone's windows were on screen when a capture hid them.
@@ -49,9 +57,11 @@ struct CaptureReady {
     id: String,
     /// Pixels per point of the captured display, so styling lengths match the image.
     scale: f64,
+    /// Style and copy it without showing the editor, then call `copy_finished`.
+    copy: bool,
 }
 
-/// What a capture shortcut or menu entry takes.
+/// What a capture takes; the selector and the fallback tool work per kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureKind {
@@ -65,13 +75,28 @@ pub enum CaptureKind {
     Scroll,
 }
 
-impl CaptureKind {
-    pub const ALL: [Self; 4] = [Self::Region, Self::Window, Self::Screen, Self::Scroll];
+/// What a capture shortcut or menu entry does: a capture kind, and whether the result opens
+/// in the editor or is styled and copied straight to the clipboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureAction {
+    Region,
+    /// A zone styled like the editor would and copied, without showing the editor.
+    RegionCopy,
+    Window,
+    Screen,
+    Scroll,
+}
 
-    /// Name in the settings file and in menu ids.
+impl CaptureAction {
+    /// In the order the settings and the menu list them.
+    pub const ALL: [Self; 5] = [Self::Region, Self::RegionCopy, Self::Window, Self::Screen, Self::Scroll];
+
+    /// Name in the settings file and in menu ids; the same as its serialized form.
     pub fn id(self) -> &'static str {
         match self {
             Self::Region => "region",
+            Self::RegionCopy => "region-copy",
             Self::Window => "window",
             Self::Screen => "screen",
             Self::Scroll => "scroll",
@@ -79,19 +104,44 @@ impl CaptureKind {
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.id() == id)
+        Self::ALL.into_iter().find(|action| action.id() == id)
     }
 
-    /// As the user reads it in messages.
+    /// As the user reads it in the settings and in messages.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Region => "Zona",
-            Self::Window => "Ventana",
-            Self::Screen => "Pantalla completa",
-            Self::Scroll => "Con scroll",
+            Self::Region => "Capturar y abrir el editor",
+            Self::RegionCopy => "Capturar y copiar al portapapeles",
+            Self::Window => "Capturar ventana",
+            Self::Screen => "Capturar pantalla completa",
+            Self::Scroll => "Capturar con scroll",
         }
     }
 
+    /// The menu bar entry, which names the zone the two zone actions take.
+    pub fn menu_title(self) -> &'static str {
+        match self {
+            Self::Region => "Capturar zona",
+            Self::RegionCopy => "Capturar zona y copiar",
+            other => other.label(),
+        }
+    }
+
+    pub fn kind(self) -> CaptureKind {
+        match self {
+            Self::Region | Self::RegionCopy => CaptureKind::Region,
+            Self::Window => CaptureKind::Window,
+            Self::Screen => CaptureKind::Screen,
+            Self::Scroll => CaptureKind::Scroll,
+        }
+    }
+
+    fn copies(self) -> bool {
+        self == Self::RegionCopy
+    }
+}
+
+impl CaptureKind {
     /// Arguments for `screencapture` when the own capture is unavailable.
     fn fallback_args(self) -> &'static [&'static str] {
         // -x: no sound; -o: no window shadow, the editor draws its own.
@@ -157,21 +207,23 @@ pub fn forget(app: &AppHandle, id: &str) {
 }
 
 /// Starts a capture in the background; ignored while another one is running.
-pub fn start(app: AppHandle, kind: CaptureKind) {
-    tauri::async_runtime::spawn(run_capture(app, kind));
+pub fn start(app: AppHandle, action: CaptureAction) {
+    tauri::async_runtime::spawn(run_capture(app, action));
 }
 
-/// The editor's capture buttons take a zone unless they say otherwise.
+/// The editor's capture buttons take a zone and open it unless they say otherwise.
 #[tauri::command]
-pub fn start_capture(app: AppHandle, kind: Option<CaptureKind>) {
-    start(app, kind.unwrap_or(CaptureKind::Region));
+pub fn start_capture(app: AppHandle, action: Option<CaptureAction>) {
+    start(app, action.unwrap_or(CaptureAction::Region));
 }
 
-async fn run_capture(app: AppHandle, kind: CaptureKind) {
+async fn run_capture(app: AppHandle, action: CaptureAction) {
     let captures = app.state::<Captures>();
     if captures.in_progress.swap(true, Ordering::SeqCst) {
         return;
     }
+    captures.copying.store(action.copies(), Ordering::SeqCst);
+    let kind = action.kind();
 
     // Invariant: the screens are captured before anything activates Snapclone or moves the
     // focus (no `show`, `set_focus`, activation or overlay before the shot), so a menu or a
@@ -265,21 +317,28 @@ pub fn selection_ended(app: &AppHandle) {
 
 /// Releases the capture and shows again the windows it hid, whether it was taken, failed or
 /// was cancelled. A capture delivered to the editor already showed it; it is brought back
-/// in front of the Preferences window.
+/// in front of the Preferences window. A copied capture never focuses the editor: it only
+/// comes back, without the focus, if it was on screen before the shot.
 fn capture_ended(app: &AppHandle) {
     let captures = app.state::<Captures>();
     let hidden = captures.hidden.lock().unwrap().take();
+    let copying = captures.copying.swap(false, Ordering::SeqCst);
     captures.in_progress.store(false, Ordering::SeqCst);
     let Some(hidden) = hidden else { return };
     if hidden.settings {
         app_settings::show_window(app);
     }
-    if hidden.editor || editor_window::is_visible(app) {
+    if copying {
+        if hidden.editor {
+            editor_window::show_without_focus(app);
+        }
+    } else if hidden.editor || editor_window::is_visible(app) {
         editor_window::show(app, false);
     }
 }
 
-/// Registers a finished capture, stores it in the history and hands it to the editor.
+/// Registers a finished capture, stores it in the history and hands it to the editor, which
+/// opens it, or styles and copies it while staying hidden for "Capturar zona y copiar".
 pub fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
     history::record(app, &id, &path, scale);
     // The history view only needs it later, so it never delays showing the capture.
@@ -289,10 +348,64 @@ pub fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
             eprintln!("thumbnail could not be written: {error}");
         }
     });
-    app.state::<Captures>().files.lock().unwrap().insert(id.clone(), path);
-    editor_window::show(app, false);
-    if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale }) {
+    let captures = app.state::<Captures>();
+    captures.files.lock().unwrap().insert(id.clone(), path);
+    let copy = captures.copying.load(Ordering::SeqCst);
+    if copy {
+        *captures.pending_copy.lock().unwrap() = Some(id.clone());
+        watch_copy(app.clone(), id.clone());
+    } else {
+        editor_window::show(app, false);
+    }
+    if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale, copy }) {
         eprintln!("capture-ready emit failed: {error}");
+        if copy {
+            finish_copy(app, &format!("No se pudo copiar la captura: {error}"));
+        }
+    }
+}
+
+/// A hidden editor that never answers (its page failed or was suspended) would leave the
+/// capture neither copied nor shown; after `COPY_TIMEOUT` it is shown with the reason.
+fn watch_copy(app: AppHandle, id: String) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(COPY_TIMEOUT).await;
+        let captures = app.state::<Captures>();
+        let expired = {
+            let mut pending = captures.pending_copy.lock().unwrap();
+            let expired = pending.as_deref() == Some(id.as_str());
+            if expired {
+                *pending = None;
+            }
+            expired
+        };
+        if expired {
+            editor_window::notify(&app, "La captura tardaba demasiado en copiarse: revisa que esté abierta aquí y cópiala desde el editor", true);
+        }
+    });
+}
+
+fn finish_copy(app: &AppHandle, error: &str) {
+    app.state::<Captures>().pending_copy.lock().unwrap().take();
+    editor_window::notify(app, error, true);
+}
+
+/// The hidden editor styled and copied a capture (`error` is `None`), or could not. Success
+/// shows the "copied" bezel without activating the app; a failure brings the editor forward
+/// with the reason the page gives, so it is never lost behind a hidden window. A copy that
+/// finishes after the time-out still says so.
+#[tauri::command]
+pub async fn copy_finished(app: AppHandle, id: String, error: Option<String>) {
+    {
+        let captures = app.state::<Captures>();
+        let mut pending = captures.pending_copy.lock().unwrap();
+        if pending.as_deref() == Some(id.as_str()) {
+            *pending = None;
+        }
+    }
+    match error {
+        Some(error) => editor_window::notify(&app, &error, true),
+        None => hud::show_copied(&app),
     }
 }
 

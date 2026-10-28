@@ -30,7 +30,7 @@ fn primary_monitor() -> Result<xcap::Monitor, String> {
 /// The pointer in global points with the origin at the top left of the main display, the
 /// same space `xcap` uses for monitors.
 #[cfg(target_os = "macos")]
-fn pointer_location() -> Option<(i32, i32)> {
+pub fn pointer_location() -> Option<(i32, i32)> {
     use std::ffi::c_void;
 
     use objc2_core_foundation::CGPoint;
@@ -58,6 +58,6 @@ fn pointer_location() -> Option<(i32, i32)> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn pointer_location() -> Option<(i32, i32)> {
+pub fn pointer_location() -> Option<(i32, i32)> {
     None
 }
