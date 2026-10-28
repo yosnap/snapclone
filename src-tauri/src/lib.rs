@@ -124,6 +124,7 @@ pub fn run() {
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));
+            output::clean_exports(app.handle());
             #[cfg(target_os = "macos")]
             app.set_activation_policy(editor_window::activation_policy(editor_window::dock_hidden(app.handle())));
             let registered = shortcuts::init(app.handle());

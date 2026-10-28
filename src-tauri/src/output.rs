@@ -23,6 +23,8 @@ pub const DEFAULT_PATTERN: &str = "Snapclone {datetime}";
 const DATETIME_HEADER: &str = "x-datetime";
 const FILE_NAME_MAX_CHARS: usize = 120;
 const EXPORT_DIR: &str = "export";
+/** Shared and dragged files are kept this long, so the receiving app can still read them. */
+const EXPORT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 /// Never overwrite: "name (2).png", "name (3).png"… up to this many.
 const MAX_SUFFIX: u32 = 999;
 
@@ -126,7 +128,7 @@ pub fn set_file_name_pattern(app: AppHandle, pattern: String) -> Result<String, 
     Ok(stored.to_string())
 }
 
-async fn write_file(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
+pub async fn write_file(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || std::fs::write(path, bytes))
         .await
         .map_err(|error| error.to_string())?
@@ -136,7 +138,7 @@ async fn write_file(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
 /// "Guardar ⌘S": writes a PNG to the save folder under the default name. Without a folder,
 /// asks for one once and remembers it. Returns the path written, or `None` if cancelled.
 #[tauri::command]
-pub async fn quick_save(app: AppHandle, last: State<'_, LastSaved>, request: Request<'_>) -> Result<Option<String>, String> {
+pub async fn quick_save(app: AppHandle, request: Request<'_>) -> Result<Option<String>, String> {
     let datetime = request_datetime(&request)?.to_string();
     let bytes = raw_body(&request)?.to_vec();
     let folder = match save_folder(&app) {
@@ -149,7 +151,7 @@ pub async fn quick_save(app: AppHandle, last: State<'_, LastSaved>, request: Req
     let path = unique_path(&folder, &default_file_name(&app, &datetime), |path| path.exists())?;
     write_file(path.clone(), bytes).await?;
     let display = path.to_string_lossy().into_owned();
-    *last.0.lock().unwrap() = Some(path);
+    remember_saved(&app, path);
     Ok(Some(display))
 }
 
@@ -198,20 +200,23 @@ pub fn send_feedback() -> Result<(), String> {
     if status.success() { Ok(()) } else { Err("no hay ninguna app de correo configurada".into()) }
 }
 
-/// Writes the image to share or drag out to a private folder under the default name, so it
-/// arrives with a meaningful name. Only the latest one is kept.
+fn export_root(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_cache_dir().map_err(|error| error.to_string())?.join(EXPORT_DIR))
+}
+
+/// Writes the image to share or drag out under the default name, in a folder of its own so
+/// two exports never share a file. Earlier exports stay until they are an hour old: an app
+/// may still be reading one that was just shared or dropped on it.
 #[tauri::command]
 pub async fn prepare_export(app: AppHandle, export: State<'_, ExportFile>, request: Request<'_>) -> Result<(), String> {
     let datetime = request_datetime(&request)?.to_string();
     let bytes = raw_body(&request)?.to_vec();
-    let dir = app.path().app_cache_dir().map_err(|error| error.to_string())?.join(EXPORT_DIR);
+    let root = export_root(&app)?;
+    let dir = root.join(uuid::Uuid::new_v4().to_string());
     let path = dir.join(default_file_name(&app, &datetime));
     let target = path.clone();
     tauri::async_runtime::spawn_blocking(move || -> std::io::Result<()> {
-        // Older exports are left from previous shares and drags; they are no longer needed.
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)?;
-        }
+        remove_old_exports(&root, EXPORT_MAX_AGE);
         std::fs::create_dir_all(&dir)?;
         std::fs::write(&target, bytes)
     })
@@ -220,6 +225,28 @@ pub async fn prepare_export(app: AppHandle, export: State<'_, ExportFile>, reque
     .map_err(|error| error.to_string())?;
     *export.0.lock().unwrap() = Some(path);
     Ok(())
+}
+
+/// At launch: exports left by an earlier session that are past their age.
+pub fn clean_exports(app: &AppHandle) {
+    let Ok(root) = export_root(app) else { return };
+    tauri::async_runtime::spawn_blocking(move || remove_old_exports(&root, EXPORT_MAX_AGE));
+}
+
+/// Deletes the export folders in `root` last modified more than `max_age` ago.
+pub fn remove_old_exports(root: &Path, max_age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > max_age);
+        if old && let Err(error) = std::fs::remove_dir_all(entry.path()) {
+            eprintln!("old export could not be removed: {error}");
+        }
+    }
 }
 
 pub fn export_file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -253,6 +280,19 @@ mod tests {
         assert_eq!(file_stem("a:b\\c\n", WHEN, "u"), "a-b-c-");
         assert_eq!(file_stem("   ", WHEN, "u"), format!("Snapclone {WHEN}"));
         assert_eq!(file_stem(&"x".repeat(500), WHEN, "u").chars().count(), FILE_NAME_MAX_CHARS);
+    }
+
+    #[test]
+    fn only_old_exports_are_removed() {
+        let root = std::env::temp_dir().join(format!("snapclone-exports-{}", uuid::Uuid::new_v4()));
+        let recent = root.join("recent");
+        std::fs::create_dir_all(&recent).unwrap();
+        std::fs::write(recent.join("a.png"), b"png").unwrap();
+        remove_old_exports(&root, std::time::Duration::from_secs(3600));
+        assert!(recent.join("a.png").exists());
+        remove_old_exports(&root, std::time::Duration::ZERO);
+        assert!(!recent.exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

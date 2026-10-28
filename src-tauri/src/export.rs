@@ -3,18 +3,27 @@ use std::{path::PathBuf, sync::Mutex};
 use tauri::{State, ipc::Request};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::output::{self, raw_body};
+use crate::{
+    app_settings::{self, Toggle},
+    editor_window,
+    output::{self, raw_body},
+};
 
 /// The path the user picked in the save dialog. `save_image` only ever writes there,
 /// so the webview cannot choose arbitrary destinations.
 #[derive(Default)]
 pub struct PendingSave(Mutex<Option<PathBuf>>);
 
-/// Puts the PNG on the general pasteboard as `public.png`, without re-encoding.
-/// Kept synchronous so AppKit is called from the main thread.
+/// Puts the PNG on the general pasteboard as `public.png`, without re-encoding, then closes
+/// the editor when "Cerrar la captura después de copiarla" is on. The setting is read from
+/// the settings store in memory. Kept synchronous so AppKit is called from the main thread.
 #[tauri::command]
-pub fn copy_png(request: Request<'_>) -> Result<(), String> {
-    write_png_to_pasteboard(raw_body(&request)?)
+pub fn copy_png(app: tauri::AppHandle, request: Request<'_>) -> Result<(), String> {
+    write_png_to_pasteboard(raw_body(&request)?)?;
+    if app_settings::toggle(&app, Toggle::CloseAfterCopy) {
+        editor_window::hide(&app);
+    }
+    Ok(())
 }
 
 /// Shows the native save dialog, starting in the save folder with the default name, and
@@ -46,12 +55,7 @@ pub async fn choose_save_path(
 #[tauri::command]
 pub async fn save_image(app: tauri::AppHandle, pending: State<'_, PendingSave>, request: Request<'_>) -> Result<(), String> {
     let path = pending.0.lock().unwrap().take().ok_or("no save destination was chosen")?;
-    let bytes = raw_body(&request)?.to_vec();
-    let target = path.clone();
-    tauri::async_runtime::spawn_blocking(move || std::fs::write(target, bytes))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
+    output::write_file(path.clone(), raw_body(&request)?.to_vec()).await?;
     output::remember_saved(&app, path);
     Ok(())
 }

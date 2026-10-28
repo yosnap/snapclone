@@ -37,8 +37,10 @@ pub fn share_export(app: AppHandle, anchor: Anchor) -> Result<(), String> {
     macos::share(editor_ns_window(&app)?, &path, anchor)
 }
 
+/// Starts dragging the prepared file. Returns false, without an error, when the mouse button
+/// was already released: the press simply ended before the drag began.
 #[tauri::command]
-pub fn drag_export(app: AppHandle) -> Result<(), String> {
+pub fn drag_export(app: AppHandle) -> Result<bool, String> {
     let path = output::export_file(&app)?;
     macos::drag(editor_ns_window(&app)?, &path)
 }
@@ -53,10 +55,10 @@ mod macos {
         runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject},
     };
     use objc2_app_kit::{
-        NSApplication, NSDragOperation, NSDraggingContext, NSDraggingItem, NSDraggingSession, NSDraggingSource,
-        NSEventType, NSImage, NSSharingServicePicker, NSView, NSWindow,
+        NSApplication, NSDragOperation, NSDraggingContext, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent,
+        NSEventModifierFlags, NSEventType, NSImage, NSSharingServicePicker, NSView, NSWindow,
     };
-    use objc2_foundation::{NSArray, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSURL};
+    use objc2_foundation::{NSArray, NSPoint, NSProcessInfo, NSRect, NSRectEdge, NSSize, NSString, NSURL};
 
     use super::Anchor;
 
@@ -96,11 +98,43 @@ mod macos {
         static PICKER: RefCell<Option<Retained<NSSharingServicePicker>>> = const { RefCell::new(None) };
     }
 
-    fn content_view(ns_window: usize) -> Result<(MainThreadMarker, Retained<NSView>), String> {
+    fn editor_window<'a>(ns_window: usize) -> Result<(MainThreadMarker, &'a NSWindow, Retained<NSView>), String> {
         let mtm = MainThreadMarker::new().ok_or("AppKit must be called on the main thread")?;
         // SAFETY: Tauri returns the editor's live NSWindow; it outlives this call on the main thread.
         let window = unsafe { &*(ns_window as *const NSWindow) };
-        Ok((mtm, window.contentView().ok_or("the editor has no content view")?))
+        let view = window.contentView().ok_or("the editor has no content view")?;
+        Ok((mtm, window, view))
+    }
+
+    /// The left button is still held down (bit 0 of the pressed buttons).
+    fn left_button_pressed() -> bool {
+        NSEvent::pressedMouseButtons() & 1 != 0
+    }
+
+    /**
+     * The mouse event to start the session from. The one AppKit is handling when the page's
+     * request arrives is used if it is the drag itself; otherwise, with the button still
+     * down, an equivalent drag event is built at the pointer's current position, so the
+     * session never depends on what else AppKit happened to be processing.
+     */
+    fn drag_event(mtm: MainThreadMarker, window: &NSWindow) -> Option<Retained<NSEvent>> {
+        let current = NSApplication::sharedApplication(mtm)
+            .currentEvent()
+            .filter(|event| matches!(event.r#type(), NSEventType::LeftMouseDragged | NSEventType::LeftMouseDown));
+        if current.is_some() {
+            return current;
+        }
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            NSEventType::LeftMouseDragged,
+            window.mouseLocationOutsideOfEventStream(),
+            NSEventModifierFlags::empty(),
+            NSProcessInfo::processInfo().systemUptime(),
+            window.windowNumber(),
+            None,
+            0,
+            1,
+            1.0,
+        )
     }
 
     fn file_url(path: &Path) -> Result<Retained<NSURL>, String> {
@@ -109,7 +143,7 @@ mod macos {
     }
 
     pub fn share(ns_window: usize, path: &Path, anchor: Anchor) -> Result<(), String> {
-        let (_mtm, view) = content_view(ns_window)?;
+        let (_mtm, _window, view) = editor_window(ns_window)?;
         let url = file_url(path)?;
         let item: &AnyObject = &url;
         let items = NSArray::from_slice(&[item]);
@@ -124,14 +158,12 @@ mod macos {
         Ok(())
     }
 
-    pub fn drag(ns_window: usize, path: &Path) -> Result<(), String> {
-        let (mtm, view) = content_view(ns_window)?;
-        // The page asks while the mouse is being dragged over it, so the event AppKit is
-        // handling is that drag; a session can only start from a mouse event.
-        let event = NSApplication::sharedApplication(mtm).currentEvent().ok_or("there is no mouse event to drag from")?;
-        if !matches!(event.r#type(), NSEventType::LeftMouseDragged | NSEventType::LeftMouseDown) {
-            return Err("the mouse button is no longer pressed".into());
+    pub fn drag(ns_window: usize, path: &Path) -> Result<bool, String> {
+        let (mtm, window, view) = editor_window(ns_window)?;
+        if !left_button_pressed() {
+            return Ok(false);
         }
+        let event = drag_event(mtm, window).ok_or("no se pudo crear el evento de arrastre")?;
         let url = file_url(path)?;
         let item = NSDraggingItem::initWithPasteboardWriter(NSDraggingItem::alloc(), ProtocolObject::from_ref(&*url));
         let location = view.convertPoint_fromView(event.locationInWindow(), None);
@@ -146,7 +178,7 @@ mod macos {
         let source = DRAG_SOURCE.with(|cell| cell.borrow_mut().get_or_insert_with(|| DragSource::new(mtm)).clone());
         let items = NSArray::from_retained_slice(&[item]);
         view.beginDraggingSessionWithItems_event_source(&items, &event, ProtocolObject::from_ref(&*source));
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -158,7 +190,7 @@ mod macos {
         Err("sharing is only implemented on macOS".into())
     }
 
-    pub fn drag(_ns_window: usize, _path: &Path) -> Result<(), String> {
+    pub fn drag(_ns_window: usize, _path: &Path) -> Result<bool, String> {
         Err("dragging out is only implemented on macOS".into())
     }
 }

@@ -109,6 +109,15 @@ pub fn is_window_visible(app: &AppHandle) -> bool {
     app.get_webview_window(SETTINGS_WINDOW).is_some_and(|window| window.is_visible().unwrap_or(false))
 }
 
+/// Shows the Preferences window again after a capture, without taking the focus.
+pub fn show_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW)
+        && let Err(error) = window.show()
+    {
+        eprintln!("settings window could not be shown: {error}");
+    }
+}
+
 /// Hides the Preferences window during a capture, like the editor.
 pub fn hide_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(SETTINGS_WINDOW) {
