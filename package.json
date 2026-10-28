@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "release:mac": "scripts/release-mac.sh",
+    "notices": "node scripts/third-party-notices.mjs",
     "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json"
   },
   "dependencies": {

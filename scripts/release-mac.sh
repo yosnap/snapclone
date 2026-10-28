@@ -16,6 +16,8 @@ fail() { print -u2 "release: $1"; exit 1; }
 version=$(node -p 'require("./package.json").version')
 cargo_version=$(sed -nE 's/^version = "([^"]+)"/\1/p' src-tauri/Cargo.toml | head -1)
 [[ "$version" == "$cargo_version" ]] || fail "package.json ($version) y Cargo.toml ($cargo_version) no coinciden"
+node scripts/third-party-notices.mjs >/dev/null
+git diff --quiet THIRD-PARTY-NOTICES.txt || fail "THIRD-PARTY-NOTICES.txt no está al día: ejecuta npm run notices y haz commit"
 
 # Credentials, read from the keychain.
 identity=$(security find-identity -v -p codesigning | sed -nE 's/.*"(Developer ID Application: [^"]+)".*/\1/p' | head -1)

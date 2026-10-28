@@ -8,11 +8,20 @@ Por ahora solo hay releases para macOS: un `.dmg` universal (Apple Silicon e Int
    ```sh
    rustup target add aarch64-apple-darwin x86_64-apple-darwin
    ```
-2. Crea el certificado **Developer ID Application** desde Xcode → Ajustes → Cuentas → tu equipo → Gestionar certificados → «+». Hace falta pertenecer al Apple Developer Program.
-3. Crea una contraseña de aplicación en [account.apple.com](https://account.apple.com), en Inicio de sesión y seguridad → Contraseñas de aplicaciones.
-4. Guárdala en el llavero. El comando la pide sin mostrarla:
+2. Crea el certificado **Developer ID Application**. Hace falta pertenecer al Apple Developer Program y ser el titular de la cuenta. Sin Xcode se hace así:
+   1. Genera una solicitud de firma (CSR) con Acceso a Llaveros → Asistente de Certificados → Solicitar un certificado de una autoridad de certificación, y guárdala en el disco.
+   2. En [developer.apple.com → Certificates](https://developer.apple.com/account/resources/certificates/list), pulsa «+», elige **Developer ID Application** y **G2 Sub-CA**, y sube la CSR.
+   3. Descarga el `.cer` y ábrelo con doble clic para importarlo en el llavero.
+   4. Comprueba que aparece con `security find-identity -v -p codesigning`.
+3. Crea una contraseña de aplicación para el Apple ID de la cuenta de desarrollador en [account.apple.com](https://account.apple.com), en Inicio de sesión y seguridad → Contraseñas de aplicaciones.
+4. Guárdala en el llavero desde la app Terminal. El comando la pide sin mostrarla, así que no funciona desde una terminal que no admita escribir en sus preguntas:
    ```sh
-   security add-generic-password -a "<tu Apple ID>" -s snapclone-notary -w
+   security add-generic-password -U -a "<Apple ID>" -s snapclone-notary -w
+   ```
+   Para comprobar que Apple la acepta:
+   ```sh
+   xcrun notarytool history --apple-id "<Apple ID>" --team-id <Team ID> \
+     --password "$(security find-generic-password -s snapclone-notary -w)"
    ```
 
 El script obtiene la identidad de firma, el Team ID y el Apple ID desde el llavero. No hace falta ningún fichero `.env`.
@@ -29,7 +38,7 @@ El script obtiene la identidad de firma, el Team ID y el Apple ID desde el llave
    npm version 0.2.0 --no-git-tag-version
    sed -i '' 's/^version = ".*"/version = "0.2.0"/' src-tauri/Cargo.toml
    ```
-2. Añade la sección de la versión al principio de `CHANGELOG.md`.
+2. Añade la sección de la versión al principio de `CHANGELOG.md`. Si han cambiado las dependencias, regenera el aviso de licencias con `npm run notices`; el script de release se niega a seguir si no está al día.
 3. Haz el commit y crea la etiqueta:
    ```sh
    git commit -am "chore(release): v0.2.0"
