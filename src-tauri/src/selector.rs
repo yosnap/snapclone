@@ -174,7 +174,10 @@ fn open_overlay(app: &AppHandle, index: usize, x: i32, y: i32, width: u32, heigh
         .skip_taskbar(true)
         .visible_on_all_workspaces(true)
         .accept_first_mouse(true)
-        .focused(index == 0)
+        // Shown by `selector_ready` once the frozen image is painted: an overlay shown
+        // empty would flash every monitor black before the image arrives.
+        .visible(false)
+        .focused(false)
         .build()?;
     raise_above_menu_bar(app, window);
     Ok(())
@@ -290,6 +293,19 @@ pub async fn selector_frame(window: WebviewWindow, selection: State<'_, Selectio
         Arc::clone(&shot.image)
     };
     Ok(Response::new(image.as_raw().to_vec()))
+}
+
+/// Shows an overlay once its page has painted the frozen image, which looks exactly like
+/// the screen beneath it, so the selector appears without any flash. The first monitor's
+/// overlay takes the keyboard focus for Esc and Space.
+#[tauri::command]
+pub fn selector_ready(window: WebviewWindow) -> Result<(), String> {
+    let index = monitor_index(&window)?;
+    window.show().map_err(|error| error.to_string())?;
+    if index == 0 {
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
