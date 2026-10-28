@@ -1,0 +1,215 @@
+.history {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, 100%);
+  max-height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-header h2 {
+  margin: 0;
+  font-size: 1.1em;
+}
+
+.history-empty {
+  margin: 0;
+  padding: 24px 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.history-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 16px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.history-more {
+  margin: 0 16px 16px;
+}
+
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+button.history-open {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  text-align: left;
+}
+
+button.history-open:hover,
+button.history-open:focus-visible {
+  border-color: var(--accent);
+}
+
+.history-open img {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--checker);
+}
+
+.history-open span {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.settings-panel {
+  width: min(560px, 100%);
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-section h3 {
+  margin: 0;
+  font-size: 1em;
+}
+
+.settings-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: 1fr 180px auto;
+  align-items: center;
+  gap: 8px;
+}
+
+button.shortcut-recorder {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+button.shortcut-recorder[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.shortcut-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--error);
+  font-size: 0.9em;
+}
+
+.text-panel {
+  width: min(720px, 100%);
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.text-lines {
+  margin: 0;
+  padding: 12px 16px;
+  overflow-y: auto;
+  list-style: none;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.text-lines li {
+  padding: 3px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.text-status {
+  padding: 0 16px 12px;
+}
+
+.history-panel button {
+  height: 22px;
+  padding: 0 12px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.history-panel button.secondary,
+.history-panel button.history-open,
+.history-panel button.shortcut-recorder {
+  background: var(--window);
+  color: var(--text);
+  box-shadow: 0 0 0 0.5px var(--pill-border), 0 0.5px 1px rgba(0, 0, 0, 0.12);
+}
+
+.history-panel button.history-open {
+  height: auto;
+  padding: 6px;
+  border-radius: 8px;
+}
+
+.history-panel .status {
+  min-height: 1.2em;
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.history-panel .status.error {
+  color: var(--error);
+}

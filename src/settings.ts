@@ -1,7 +1,15 @@
 import { type Store, load } from "@tauri-apps/plugin-store";
+import {
+  ARROW_HEAD_ORDER,
+  ARROW_WIDTHS,
+  SHAPE_ORDER,
+  TEXT_SIZE_ORDER,
+  type ToolOptions,
+  defaultToolOptions,
+} from "./annotation-editor";
 import { ANNOTATION_COLORS } from "./annotations";
-import { REDACT_CATEGORIES, type RedactSettings, defaultRedactSettings } from "./auto-redact";
-import { type StoredStyle, isRecord, parseStoredStyle, toStoredStyle } from "./persisted-style";
+import { REDACT_CATEGORIES, REDACT_MODES, type RedactMode, type RedactSettings, defaultRedactSettings } from "./auto-redact";
+import { type StoredStyle, isHexColor, isRecord, parseStoredStyle, toStoredStyle } from "./persisted-style";
 import { defaultStyle } from "./style";
 
 /** Lives in the app data directory, which the store plugin resolves relative paths against. */
@@ -16,7 +24,11 @@ export type Preset = { name: string; style: StoredStyle };
 export type Settings = {
   style: StoredStyle;
   redact: RedactSettings;
+  /** The main "Redactar datos sensibles" checkbox; the categories apply while it is on. */
+  autoRedact: boolean;
+  redactMode: RedactMode;
   annotationColor: string;
+  toolOptions: ToolOptions;
   balance: boolean;
   presets: Preset[];
 };
@@ -31,7 +43,10 @@ export function defaultSettings(): Settings {
   return {
     style: toStoredStyle(defaultStyle()),
     redact: defaultRedactSettings(),
+    autoRedact: true,
+    redactMode: "pixelate",
     annotationColor: ANNOTATION_COLORS[0],
+    toolOptions: defaultToolOptions(),
     balance: false,
     presets: [],
   };
@@ -58,14 +73,21 @@ export async function loadSettings(): Promise<Settings> {
       return undefined;
     }
   };
-  const [style, redact, annotationColor, balance, presets] = await Promise.all(
-    (["style", "redact", "annotationColor", "balance", "presets"] as const).map(read),
+  const keys = ["style", "redact", "annotationColor", "balance", "presets", "autoRedact", "redactMode", "toolOptions"] as const;
+  const [style, redact, annotationColor, balance, presets, autoRedact, redactMode, toolOptions] = await Promise.all(
+    keys.map(read),
   );
   settings.style = parseStoredStyle(style) ?? settings.style;
   settings.redact = parseRedact(redact) ?? settings.redact;
-  if (ANNOTATION_COLORS.includes(annotationColor as string)) settings.annotationColor = annotationColor as string;
+  if (isHexColor(annotationColor)) settings.annotationColor = annotationColor;
   if (typeof balance === "boolean") settings.balance = balance;
+  if (typeof autoRedact === "boolean") settings.autoRedact = autoRedact;
+  // One mode for the Redactar tool and automatic redaction. Older versions kept the tool's
+  // own inside "toolOptions"; it is taken when the shared one was never saved.
+  const legacyToolMode = isRecord(toolOptions) ? toolOptions.redactMode : undefined;
+  settings.redactMode = oneOf(REDACT_MODES, redactMode, oneOf(REDACT_MODES, legacyToolMode, settings.redactMode));
   settings.presets = parsePresets(presets);
+  settings.toolOptions = parseToolOptions(toolOptions);
   return settings;
 }
 
@@ -97,6 +119,21 @@ function parseRedact(value: unknown): RedactSettings | null {
     if (typeof value[id] === "boolean") settings[id] = value[id];
   }
   return settings;
+}
+
+function oneOf<T>(allowed: readonly T[], value: unknown, fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function parseToolOptions(value: unknown): ToolOptions {
+  const fallback = defaultToolOptions();
+  if (!isRecord(value)) return fallback;
+  return {
+    textSize: oneOf(TEXT_SIZE_ORDER, value.textSize, fallback.textSize),
+    arrowHead: oneOf(ARROW_HEAD_ORDER, value.arrowHead, fallback.arrowHead),
+    arrowWidth: oneOf<number>(ARROW_WIDTHS, value.arrowWidth, fallback.arrowWidth),
+    shape: oneOf(SHAPE_ORDER, value.shape, fallback.shape),
+  };
 }
 
 export function normalizePresetName(name: string): string {

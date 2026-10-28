@@ -1,43 +1,46 @@
 use std::{path::PathBuf, sync::Mutex};
 
-use tauri::{
-    State,
-    ipc::{InvokeBody, Request},
-};
+use tauri::{State, ipc::Request};
 use tauri_plugin_dialog::DialogExt;
+
+use crate::{
+    app_settings::{self, Toggle},
+    editor_window,
+    output::{self, raw_body},
+};
 
 /// The path the user picked in the save dialog. `save_image` only ever writes there,
 /// so the webview cannot choose arbitrary destinations.
 #[derive(Default)]
 pub struct PendingSave(Mutex<Option<PathBuf>>);
 
-/// Encoded image bytes arrive as a raw IPC body to avoid JSON-encoding megabytes.
-fn raw_body<'a>(request: &'a Request<'_>) -> Result<&'a [u8], String> {
-    match request.body() {
-        InvokeBody::Raw(bytes) if !bytes.is_empty() => Ok(bytes),
-        _ => Err("expected raw image bytes".into()),
-    }
-}
-
-/// Puts the PNG on the general pasteboard as `public.png`, without re-encoding.
-/// Kept synchronous so AppKit is called from the main thread.
+/// Puts the PNG on the general pasteboard as `public.png`, without re-encoding, then closes
+/// the editor when "Cerrar la captura después de copiarla" is on. The setting is read from
+/// the settings store in memory. Kept synchronous so AppKit is called from the main thread.
 #[tauri::command]
-pub fn copy_png(request: Request<'_>) -> Result<(), String> {
-    write_png_to_pasteboard(raw_body(&request)?)
+pub fn copy_png(app: tauri::AppHandle, request: Request<'_>) -> Result<(), String> {
+    write_png_to_pasteboard(raw_body(&request)?)?;
+    if app_settings::toggle(&app, Toggle::CloseAfterCopy) {
+        editor_window::hide(&app);
+    }
+    Ok(())
 }
 
-/// Shows the native save dialog and remembers the choice. Returns the path so the
-/// editor can pick PNG or JPEG from its extension, or `None` if the user cancelled.
+/// Shows the native save dialog, starting in the save folder with the default name, and
+/// remembers the choice. Returns the path so the editor can pick PNG or JPEG from its
+/// extension, or `None` if the user cancelled. `datetime` is the editor's local export time.
 #[tauri::command]
 pub async fn choose_save_path(
     app: tauri::AppHandle,
     pending: State<'_, PendingSave>,
-    default_name: String,
+    datetime: String,
 ) -> Result<Option<String>, String> {
-    let chosen = app
-        .dialog()
-        .file()
-        .set_file_name(default_name)
+    let (name, folder) = output::save_dialog_defaults(&app, &datetime)?;
+    let mut dialog = app.dialog().file().set_file_name(name);
+    if let Some(folder) = folder {
+        dialog = dialog.set_directory(folder);
+    }
+    let chosen = dialog
         .add_filter("PNG", &["png"])
         .add_filter("JPEG", &["jpg", "jpeg"])
         .blocking_save_file()
@@ -50,13 +53,11 @@ pub async fn choose_save_path(
 
 /// Writes the encoded image to the path from the last `choose_save_path`, off the main thread.
 #[tauri::command]
-pub async fn save_image(pending: State<'_, PendingSave>, request: Request<'_>) -> Result<(), String> {
+pub async fn save_image(app: tauri::AppHandle, pending: State<'_, PendingSave>, request: Request<'_>) -> Result<(), String> {
     let path = pending.0.lock().unwrap().take().ok_or("no save destination was chosen")?;
-    let bytes = raw_body(&request)?.to_vec();
-    tauri::async_runtime::spawn_blocking(move || std::fs::write(path, bytes))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+    output::write_file(path.clone(), raw_body(&request)?.to_vec()).await?;
+    output::remember_saved(&app, path);
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

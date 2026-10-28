@@ -7,11 +7,15 @@ export type RedactCategory = "email" | "credit-card" | "ip-address" | "api-key";
 export type SensitiveRegion = { category: RedactCategory; x: number; y: number; width: number; height: number };
 
 export const REDACT_CATEGORIES: { id: RedactCategory; label: string }[] = [
-  { id: "email", label: "Emails" },
-  { id: "credit-card", label: "Tarjetas" },
+  { id: "email", label: "Direcciones de correo" },
+  { id: "credit-card", label: "Tarjetas de crédito" },
   { id: "ip-address", label: "Direcciones IP" },
-  { id: "api-key", label: "Claves de API" },
+  { id: "api-key", label: "Posibles claves de API y contraseñas" },
 ];
+
+/** How a redacted region is hidden: pixelated, or covered with a solid block. */
+export type RedactMode = "pixelate" | "solid";
+export const REDACT_MODES: RedactMode[] = ["pixelate", "solid"];
 
 /** Breathing room around Vision's tight glyph boxes, in points. */
 const REGION_MARGIN = 2;
@@ -49,25 +53,4 @@ export function toPixelateAnnotations(
       height: Math.min(imageHeight, region.y * imageHeight + region.height * imageHeight + margin) - y,
     };
   });
-}
-
-/** Renders one checkbox per category; `onToggle` runs with the category that changed. */
-export function bindRedactControls(
-  container: HTMLElement,
-  settings: RedactSettings,
-  onToggle: (category: RedactCategory, enabled: boolean) => void,
-): void {
-  for (const { id, label } of REDACT_CATEGORIES) {
-    const row = document.createElement("label");
-    row.className = "check";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = settings[id];
-    checkbox.addEventListener("change", () => {
-      settings[id] = checkbox.checked;
-      onToggle(id, checkbox.checked);
-    });
-    row.append(checkbox, label);
-    container.append(row);
-  }
 }

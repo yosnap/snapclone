@@ -1,3 +1,4 @@
+mod app_settings;
 mod capture;
 #[cfg(target_os = "macos")]
 mod capture_below;
@@ -7,6 +8,7 @@ mod geometry;
 mod history;
 mod images;
 mod ocr;
+mod output;
 mod import;
 #[cfg(target_os = "macos")]
 mod image_io;
@@ -15,6 +17,7 @@ mod redact;
 mod screen;
 mod scroll;
 mod selector;
+mod share_drag;
 mod shortcuts;
 mod stitch;
 mod tray;
@@ -29,6 +32,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(capture::Captures::default())
         .manage(export::PendingSave::default())
+        .manage(output::LastSaved::default())
+        .manage(output::ExportFile::default())
         .manage(selector::Selection::default())
         .manage(shortcuts::Shortcuts::default())
         .manage(scroll::ScrollCapture::default())
@@ -58,12 +63,17 @@ pub fn run() {
                 editor_window::hide(window.app_handle());
             }
             // A shortcut recorder left open never keeps the global shortcuts paused.
-            WindowEvent::Focused(false) if window.label() == capture::EDITOR_WINDOW => shortcuts::resume(window.app_handle()),
+            WindowEvent::Focused(false) if window.label() == app_settings::SETTINGS_WINDOW => {
+                shortcuts::resume(window.app_handle());
+            }
             // The paths of files dropped on the editor come from the system, never the page.
             WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) if window.label() == capture::EDITOR_WINDOW => {
                 import::open_dropped(window.app_handle(), paths);
             }
             WindowEvent::Destroyed => {
+                if window.label() == app_settings::SETTINGS_WINDOW {
+                    shortcuts::resume(window.app_handle());
+                }
                 selector::on_window_destroyed(window.app_handle(), window.label());
                 scroll::on_window_destroyed(window.app_handle(), window.label());
             }
@@ -95,10 +105,26 @@ pub fn run() {
             import::open_image_file,
             editor_window::reopen_last_capture,
             ocr::recognize_text,
-            ocr::copy_capture_text
+            ocr::copy_capture_text,
+            output::quick_save,
+            output::choose_save_folder,
+            output::set_file_name_pattern,
+            output::reveal_saved,
+            output::open_save_folder,
+            output::send_feedback,
+            output::prepare_export,
+            share_drag::share_export,
+            share_drag::drag_export,
+            editor_window::close_editor,
+            app_settings::get_app_settings,
+            app_settings::set_app_toggle,
+            app_settings::open_settings,
+            app_settings::show_history,
+            app_settings::open_history_folder
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));
+            output::clean_exports(app.handle());
             #[cfg(target_os = "macos")]
             app.set_activation_policy(editor_window::activation_policy(editor_window::dock_hidden(app.handle())));
             let registered = shortcuts::init(app.handle());

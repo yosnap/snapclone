@@ -5,13 +5,13 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 use crate::{
+    app_settings,
     capture::EDITOR_WINDOW,
     geometry::{self, Rect},
     history, prefs,
 };
 
 const DOCK_HIDDEN_KEY: &str = "hideDockIcon";
-const SETTINGS_EVENT: &str = "open-settings";
 const NOTICE_EVENT: &str = "editor-notice";
 const REOPEN_EVENT: &str = "reopen-capture";
 
@@ -40,6 +40,12 @@ pub fn hide(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(EDITOR_WINDOW) {
         let _ = window.hide();
     }
+}
+
+/// "Copiar y cerrar" and "cerrar tras copiar": the editor closes as with its close button.
+#[tauri::command]
+pub fn close_editor(app: AppHandle) {
+    hide(&app);
 }
 
 /// Whether the editor is on screen. A hidden app (⌘H or "Ocultar Snapclone") counts as not.
@@ -100,12 +106,9 @@ pub fn reopen_last_capture(app: AppHandle) {
     reopen_last(&app);
 }
 
-/// Brings the editor forward with its settings open.
+/// "Ajustes…" in the app menu (⌘,) and the menu bar icon: the Preferences window.
 pub fn show_settings(app: &AppHandle) {
-    show(app, false);
-    if let Err(error) = app.emit_to(EDITOR_WINDOW, SETTINGS_EVENT, ()) {
-        eprintln!("open-settings emit failed: {error}");
-    }
+    app_settings::open(app);
 }
 
 /// Brings the editor forward with a message in its status line, so the outcome of an action
@@ -175,12 +178,12 @@ pub fn get_dock_hidden(app: AppHandle) -> bool {
 }
 
 /// Saves and applies the choice at once. Leaving the Dock can deactivate the app, so the
-/// editor is brought back to the front afterwards.
+/// window the user was in is brought back to the front afterwards.
 #[tauri::command]
 pub fn set_dock_hidden(app: AppHandle, hidden: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(activation_policy(hidden)).map_err(|error| error.to_string())?;
     prefs::write(&app, DOCK_HIDDEN_KEY, hidden)?;
-    show(&app, false);
+    app_settings::refocus(&app);
     Ok(())
 }

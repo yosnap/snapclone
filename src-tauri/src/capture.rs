@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{http, AppHandle, Emitter, Manager};
 use xcap::image::RgbaImage;
 
-use crate::{editor_window, history, images, screen, selector, wallpaper};
+use crate::{
+    app_settings::{self, Toggle},
+    editor_window, history, images, screen, selector, wallpaper,
+};
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
 const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
@@ -30,6 +33,15 @@ const WALLPAPER_VERSION_HEADER: &str = "X-Wallpaper-Version";
 pub struct Captures {
     files: Mutex<HashMap<String, PathBuf>>,
     in_progress: AtomicBool,
+    /// The windows hidden for the capture in progress, shown again when it ends.
+    hidden: Mutex<Option<HiddenWindows>>,
+}
+
+/// Which of Snapclone's windows were on screen when a capture hid them.
+#[derive(Clone, Copy)]
+struct HiddenWindows {
+    editor: bool,
+    settings: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -168,12 +180,20 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
     // ordered out, which does not activate the app either. Every capture kind keeps this:
     // the selector shoots the monitors before opening its overlays (which the scroll capture
     // also starts from), and the full-screen capture shows the editor only after the shot.
-    let was_visible = editor_window::is_visible(&app);
-    // Ordered out even when it reports itself invisible: after ⌘H it still belongs on screen,
-    // and unhiding the app below would bring it back into the shot.
-    editor_window::hide(&app);
-    if was_visible {
-        tokio::time::sleep(HIDE_SETTLE).await;
+    // The user can keep Snapclone's windows in the shot ("Ocultar las ventanas al capturar").
+    if app_settings::toggle(&app, Toggle::HideWindowsOnCapture) {
+        let hidden = HiddenWindows {
+            editor: editor_window::is_visible(&app),
+            settings: app_settings::is_window_visible(&app),
+        };
+        *captures.hidden.lock().unwrap() = Some(hidden);
+        // Ordered out even when it reports itself invisible: after ⌘H it still belongs on
+        // screen, and unhiding the app below would bring it back into the shot.
+        editor_window::hide(&app);
+        app_settings::hide_window(&app);
+        if hidden.editor || hidden.settings {
+            tokio::time::sleep(HIDE_SETTLE).await;
+        }
     }
     // Every kind opens its overlays (or shows the editor) in a hidden app otherwise.
     editor_window::unhide_without_activation(&app);
@@ -194,7 +214,7 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
             if let Err(error) = store_image(&app, image, scale).await {
                 report_failure(&app, &error);
             }
-            captures.in_progress.store(false, Ordering::SeqCst);
+            capture_ended(&app);
             return;
         }
         // No system tool can take a scroll capture, so its failure is shown as it is; only a
@@ -206,7 +226,7 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
                 "La captura con scroll necesita el permiso de Grabación de pantalla. Actívalo en Ajustes del Sistema › Privacidad y seguridad.".to_string()
             };
             report_failure(&app, &message);
-            captures.in_progress.store(false, Ordering::SeqCst);
+            capture_ended(&app);
             return;
         }
         Err(error) => eprintln!("own capture unavailable, using screencapture: {error}"),
@@ -219,12 +239,13 @@ async fn run_capture(app: AppHandle, kind: CaptureKind) {
     match result {
         Ok(Some((id, path))) => {
             let scale = std::fs::read(&path).map_or(1.0, |bytes| png_scale(&bytes));
+            app_settings::play_capture_sound(&app);
             deliver(&app, id, path, scale);
         }
         Ok(None) => {}
         Err(error) => report_failure(&app, &error),
     }
-    captures.in_progress.store(false, Ordering::SeqCst);
+    capture_ended(&app);
 }
 
 /// Brings the editor back with the error in its status line, so a failed capture is never
@@ -239,7 +260,23 @@ pub fn report_failure(app: &AppHandle, error: &str) {
 
 /// Called when the own selector closes, whether a capture was taken or not.
 pub fn selection_ended(app: &AppHandle) {
-    app.state::<Captures>().in_progress.store(false, Ordering::SeqCst);
+    capture_ended(app);
+}
+
+/// Releases the capture and shows again the windows it hid, whether it was taken, failed or
+/// was cancelled. A capture delivered to the editor already showed it; it is brought back
+/// in front of the Preferences window.
+fn capture_ended(app: &AppHandle) {
+    let captures = app.state::<Captures>();
+    let hidden = captures.hidden.lock().unwrap().take();
+    captures.in_progress.store(false, Ordering::SeqCst);
+    let Some(hidden) = hidden else { return };
+    if hidden.settings {
+        app_settings::show_window(app);
+    }
+    if hidden.editor || editor_window::is_visible(app) {
+        editor_window::show(app, false);
+    }
 }
 
 /// Registers a finished capture, stores it in the history and hands it to the editor.
@@ -280,6 +317,7 @@ pub async fn store_image(app: &AppHandle, image: RgbaImage, scale: f64) -> Resul
     tauri::async_runtime::spawn_blocking(move || images::write_png(&target, &image))
         .await
         .map_err(|error| error.to_string())??;
+    app_settings::play_capture_sound(app);
     deliver(app, id, path, scale);
     Ok(())
 }

@@ -1,5 +1,6 @@
 import { type Annotation, FONT_STACK, drawAnnotations, drawSelection } from "./annotations";
-import { type Background, type Style, GRADIENT_PRESETS, ratioValue } from "./style";
+import { dominantBorderColor, readPixels } from "./balance";
+import { type Background, type Style, GRADIENT_PRESETS, outputSize, ratioValue } from "./style";
 import { blurredWallpaper } from "./wallpaper";
 
 /** The capture as loaded, or a canvas derived from it (a balanced capture). */
@@ -25,13 +26,19 @@ export type Overlay = {
   selected: Annotation | null;
 };
 
-/** Where the capture sits inside the composed canvas, in canvas pixels. */
-export type Layout = { width: number; height: number; x: number; y: number; radius: number };
+/**
+ * Where the capture sits inside the composed canvas, in canvas pixels. `x`/`y` are the
+ * capture's origin; the card is the rounded, shadowed frame around it, `inset` wider.
+ */
+export type Layout = { width: number; height: number; x: number; y: number; inset: number; radius: number };
 
 export function layout(capture: Capture, style: Style): Layout {
   const { width: imageWidth, height: imageHeight, scale } = capture;
   const padding = style.padding * scale;
-  const fitted = fitRatio(imageWidth + padding * 2, imageHeight + padding * 2, ratioValue(style.ratio));
+  const inset = Math.round(style.inset * scale);
+  const cardWidth = imageWidth + inset * 2;
+  const cardHeight = imageHeight + inset * 2;
+  const fitted = fitRatio(cardWidth + padding * 2, cardHeight + padding * 2, ratioValue(style.ratio));
   const width = Math.round(fitted.width);
   const height = Math.round(fitted.height);
   return {
@@ -39,8 +46,41 @@ export function layout(capture: Capture, style: Style): Layout {
     height,
     x: Math.round((width - imageWidth) / 2),
     y: Math.round((height - imageHeight) / 2),
-    radius: Math.min(style.radius * scale, imageWidth / 2, imageHeight / 2),
+    inset,
+    radius: Math.min(style.radius * scale, cardWidth / 2, cardHeight / 2),
   };
+}
+
+const edgeColors = new WeakMap<CanvasImageSource, string>();
+
+/**
+ * The capture's predominant edge colour, which fills the inset so the frame looks like a
+ * continuation of the capture's own background. Computed once per capture.
+ */
+export function edgeColor(capture: Capture): string {
+  const cached = edgeColors.get(capture.image);
+  if (cached) return cached;
+  const border = dominantBorderColor(readPixels(capture.image, capture.width, capture.height));
+  const [red, green, blue, alpha] = border?.color ?? [255, 255, 255, 255];
+  const color = `rgba(${red}, ${green}, ${blue}, ${(alpha / 255).toFixed(3)})`;
+  edgeColors.set(capture.image, color);
+  return color;
+}
+
+/**
+ * The canvas that is copied or saved. With a size such as "1600x900" the composition,
+ * already at that ratio, is resampled to exactly that many pixels.
+ */
+export function outputCanvas(canvas: HTMLCanvasElement, style: Style): HTMLCanvasElement {
+  const size = outputSize(style.ratio);
+  if (!size || (size.width === canvas.width && size.height === canvas.height)) return canvas;
+  const output = document.createElement("canvas");
+  output.width = size.width;
+  output.height = size.height;
+  const ctx = output.getContext("2d")!;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(canvas, 0, 0, size.width, size.height);
+  return output;
 }
 
 /**
@@ -51,7 +91,7 @@ export function layout(capture: Capture, style: Style): Layout {
 export function render(canvas: HTMLCanvasElement, capture: Capture, style: Style, overlay: Overlay): void {
   const { scale } = capture;
   const frame = layout(capture, style);
-  const { x, y, radius } = frame;
+  const { x, y, inset, radius } = frame;
 
   resize(canvas, frame.width, frame.height);
   const ctx = canvas.getContext("2d")!;
@@ -59,7 +99,7 @@ export function render(canvas: HTMLCanvasElement, capture: Capture, style: Style
   ctx.drawImage(baseLayer(capture, style, frame), 0, 0);
 
   ctx.save();
-  roundedRect(ctx, x, y, capture.width, capture.height, radius);
+  roundedRect(ctx, x - inset, y - inset, capture.width + inset * 2, capture.height + inset * 2, radius);
   ctx.clip();
   ctx.translate(x, y);
   drawAnnotations(ctx, capture, overlay.annotations);
@@ -98,10 +138,12 @@ function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasEle
     // The wallpaper background keeps its identity while its image loads or is replaced.
     style.background.kind === "wallpaper" && style.background.image ? objectId(style.background.image) : "",
     style.padding,
+    style.inset,
+    style.insetColor ?? "",
     style.radius,
     style.shadow,
     style.ratio,
-    style.watermark,
+    style.showWatermark ? style.watermark : "",
   ].join("|");
   if (key === base.key) return base.canvas;
 
@@ -111,20 +153,21 @@ function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasEle
   ctx.clearRect(0, 0, frame.width, frame.height);
   paintBackground(ctx, style.background, frame.width, frame.height);
 
-  // Drawing the already-rounded capture with a shadow makes the shadow follow its alpha,
+  // Drawing the already-rounded card with a shadow makes the shadow follow its alpha,
   // so transparent pixels (window captures) never reveal a solid backing shape.
-  const rounded = roundedCapture(capture, frame.radius);
+  const card = roundedCard(capture, frame, frame.inset > 0 ? (style.insetColor ?? edgeColor(capture)) : null);
   ctx.save();
   if (style.shadow > 0) {
     ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
     ctx.shadowBlur = style.shadow * scale;
     ctx.shadowOffsetY = style.shadow * scale * 0.4;
   }
-  ctx.drawImage(rounded, frame.x, frame.y);
+  ctx.drawImage(card, frame.x - frame.inset, frame.y - frame.inset);
   ctx.restore();
 
-  if (style.watermark.trim()) {
-    paintWatermark(ctx, style.watermark.trim(), frame.x + capture.width, frame.y + capture.height, scale);
+  if (style.showWatermark && style.watermark.trim()) {
+    const bottom = frame.y + capture.height + frame.inset;
+    paintWatermark(ctx, style.watermark.trim(), frame.x + capture.width + frame.inset, bottom, scale);
   }
   base.key = key;
   return base.canvas;
@@ -132,14 +175,20 @@ function baseLayer(capture: Capture, style: Style, frame: Layout): HTMLCanvasEle
 
 const roundedLayer = document.createElement("canvas");
 
-function roundedCapture(capture: Capture, radius: number): HTMLCanvasElement {
-  resize(roundedLayer, capture.width, capture.height);
+/** The capture inside its card: `fill` (the inset colour) around it, all clipped round. */
+function roundedCard(capture: Capture, frame: Layout, fill: string | null): HTMLCanvasElement {
+  const { inset, radius } = frame;
+  resize(roundedLayer, capture.width + inset * 2, capture.height + inset * 2);
   const ctx = roundedLayer.getContext("2d")!;
   ctx.clearRect(0, 0, roundedLayer.width, roundedLayer.height);
   ctx.save();
   roundedRect(ctx, 0, 0, roundedLayer.width, roundedLayer.height, radius);
   ctx.clip();
-  ctx.drawImage(capture.image, 0, 0);
+  if (fill) {
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, roundedLayer.width, roundedLayer.height);
+  }
+  ctx.drawImage(capture.image, inset, inset);
   ctx.restore();
   return roundedLayer;
 }
@@ -172,8 +221,12 @@ function paintBackground(
       const fill = cssLinearGradient(ctx, background.angle, width, height);
       background.stops.forEach((stop) => fill.addColorStop(stop.offset, stop.color));
       ctx.fillStyle = fill;
-      break;
+      ctx.fillRect(0, 0, width, height);
+      paintGlows(ctx, background.glows ?? [], width, height);
+      return;
     }
+    case "none":
+      return;
     case "image":
       drawCover(ctx, background.image, background.image.naturalWidth, background.image.naturalHeight, width, height);
       return;
@@ -186,6 +239,20 @@ function paintBackground(
     }
   }
   ctx.fillRect(0, 0, width, height);
+}
+
+/** Like CSS `radial-gradient(circle at x y, color, transparent radius)` over the fill. */
+function paintGlows(ctx: CanvasRenderingContext2D, glows: NonNullable<Extract<Background, { kind: "gradient" }>["glows"]>, width: number, height: number) {
+  const side = Math.max(width, height);
+  for (const glow of glows) {
+    const x = glow.x * width;
+    const y = glow.y * height;
+    const fill = ctx.createRadialGradient(x, y, 0, x, y, glow.radius * side);
+    fill.addColorStop(0, glow.color);
+    fill.addColorStop(1, "rgba(255, 255, 255, 0)");
+    ctx.fillStyle = fill;
+    ctx.fillRect(0, 0, width, height);
+  }
 }
 
 /** Reproduces CSS `linear-gradient(<angle>deg, …)` geometry on a canvas. */

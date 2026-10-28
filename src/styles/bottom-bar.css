@@ -1,0 +1,78 @@
+/* Bottom bar, 50 px: grey push pills on the left and the double-click hint on the right. */
+.bottom-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 50px;
+  padding: 0 20px 0 10px;
+}
+
+.bottom-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bar-button,
+.drag-pill {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 14px;
+  border-radius: 6px;
+  background: var(--control);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.bar-button:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
+.bar-button:active:not(:disabled) {
+  background: var(--control-pressed);
+}
+
+.drag-pill {
+  gap: 4px;
+  padding: 0 10px 0 5px;
+  background: var(--control-pressed);
+  box-shadow: inset 0 0 0 1px var(--pill-border);
+  cursor: grab;
+}
+
+.drag-pill[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.zoom-button .icon {
+  color: var(--text);
+}
+
+.zoom-button {
+  padding: 0 10px 0 14px;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bottom-tip {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.split-divider {
+  flex: none;
+  width: 1px;
+  margin-top: -2px;
+  background: var(--separator);
+}

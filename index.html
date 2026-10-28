@@ -9,99 +9,131 @@
   </head>
 
   <body>
-    <main class="editor">
-      <section class="stage">
-        <div id="toolbar" class="toolbar" role="toolbar" aria-label="Anotaciones">
-          <div class="tool-group">
-            <button type="button" class="tool" data-tool="select" title="Seleccionar y mover (V)">↖ Mover</button>
-            <button type="button" class="tool" data-tool="arrow" title="Flecha (A)">↗ Flecha</button>
-            <button type="button" class="tool" data-tool="rect" title="Rectángulo (R)">▭ Rectángulo</button>
-            <button type="button" class="tool" data-tool="text" title="Texto (T)">T Texto</button>
-            <button type="button" class="tool" data-tool="pixelate" title="Pixelar (P)">▦ Pixelar</button>
-          </div>
-          <div id="annotation-colors" class="tool-group" aria-label="Color"></div>
-          <div class="tool-group">
-            <button type="button" class="tool" data-history="undo" title="Deshacer (⌘Z)">↶</button>
-            <button type="button" class="tool" data-history="redo" title="Rehacer (⇧⌘Z)">↷</button>
-          </div>
+    <div class="window">
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="tool-pills" id="toolbar" role="toolbar" aria-label="Anotaciones" data-tauri-drag-region>
+          <button type="button" class="pill tool-pill" data-tool="text" style="--pill-width: 54px" title="Texto (1): pulsa otra vez para cambiar el tamaño">
+            <span data-icon="text" data-icon-size="20"></span><span class="pill-number">1</span>
+          </button>
+          <button type="button" class="pill tool-pill" data-tool="arrow" style="--pill-width: 84px" title="Flecha (2): pulsa otra vez para cambiar el estilo">
+            <span data-icon="arrow" data-icon-size="22"></span><span class="pill-number">2</span>
+          </button>
+          <button type="button" class="pill tool-pill" data-tool="redact" style="--pill-width: 286px" title="Redactar (3)">
+            <span data-icon="eraser" data-icon-size="22"></span><span class="pill-number">3</span>
+          </button>
+          <button type="button" class="pill tool-pill" data-tool="shape" style="--pill-width: 127px" title="Formas (4): pulsa otra vez para cambiar la forma">
+            <span data-icon="shapes" data-icon-size="22"></span><span class="pill-number">4</span>
+          </button>
+          <button type="button" class="pill color-pill" id="color-button" title="Color de las anotaciones" aria-haspopup="dialog">
+            <span class="color-chip" id="color-chip"></span>
+          </button>
+          <button type="button" class="pill tip-pill" id="tip-button">Tip: usa las teclas numéricas (1, 2, 3, 4)</button>
         </div>
-        <div class="canvas-area">
-          <div id="empty-state" class="empty-state">
-            <p id="empty-hint">Usa el botón o el icono de la barra de menús.</p>
-            <p class="empty-extra">También puedes arrastrar aquí una imagen o pegarla con <kbd>⌘V</kbd>.</p>
-            <button type="button" data-action="capture">Capturar región</button>
+        <div class="titlebar-spacer" data-tauri-drag-region></div>
+        <button type="button" class="pill feedback-pill" id="feedback-button">Enviar comentarios</button>
+        <button type="button" class="pill icon-pill" id="share-button" title="Compartir" aria-label="Compartir" disabled>
+          <span data-icon="share" data-icon-size="17"></span>
+        </button>
+      </header>
+
+      <main class="workspace">
+        <section class="stage">
+          <div class="canvas-area" id="canvas-area">
+            <div class="canvas-scroll" id="canvas-scroll">
+              <canvas id="editor-canvas" hidden></canvas>
+            </div>
+            <div id="empty-state" class="empty-state">
+              <p id="empty-hint">Usa el botón o el icono de la barra de menús.</p>
+              <p class="empty-extra">También puedes arrastrar aquí una imagen o pegarla con <kbd>⌘V</kbd>.</p>
+              <button type="button" class="push-button" data-action="capture">Capturar región</button>
+            </div>
+            <input id="text-entry" class="text-entry" type="text" hidden aria-label="Texto de la anotación" />
+            <p id="status" class="toast" role="status" hidden></p>
           </div>
-          <canvas id="editor-canvas" hidden></canvas>
-        </div>
-        <input id="text-entry" class="text-entry" type="text" hidden aria-label="Texto de la anotación" />
-      </section>
+          <footer class="bottom-bar">
+            <div class="bottom-actions">
+              <div class="drag-pill" id="drag-button" role="button" tabindex="-1" aria-disabled="true" title="Arrastra la imagen a otra app">
+                <span data-icon="grip" data-icon-size="18"></span><span>Arrástrame</span>
+              </div>
+              <button type="button" class="bar-button" id="copy-button" disabled>Copiar ⌘C</button>
+              <button type="button" class="bar-button" id="save-button" disabled>Guardar ⌘S</button>
+              <button type="button" class="bar-button" id="save-as-button" disabled>Guardar como…</button>
+              <button type="button" class="bar-button zoom-button" id="zoom-button" aria-haspopup="menu">
+                <span id="zoom-label">100%</span><span data-icon="chevron-down" data-icon-size="13"></span>
+              </button>
+              <button type="button" class="bar-button" id="more-button" aria-haspopup="menu">Más…</button>
+            </div>
+            <p class="bottom-tip">Doble clic en el fondo = Copiar y cerrar</p>
+          </footer>
+        </section>
+        <div class="split-divider" aria-hidden="true"></div>
 
-      <aside id="sidebar" class="sidebar">
-        <fieldset>
-          <legend>Fondo</legend>
-          <div id="background-swatches" class="swatches"></div>
-          <div class="row">
-            <label class="inline">Color <input type="color" id="solid-color" value="#1e293b" /></label>
-            <label class="file-button">
-              Imagen…
-              <input type="file" id="background-file" accept="image/*" hidden />
-            </label>
+        <aside id="sidebar" class="inspector" aria-label="Estilo">
+          <div id="presets" class="preset-row">
+            <button type="button" class="popup-button" id="preset-button" aria-haspopup="menu">
+              <span id="preset-label">Tu preset</span><span data-icon="chevron-up-down" data-icon-size="12"></span>
+            </button>
+            <button type="button" class="icon-button" id="preset-delete" title="Borrar preset">
+              <span data-icon="trash" data-icon-size="17"></span>
+            </button>
           </div>
-        </fieldset>
+          <div class="inspector-separator" role="separator"></div>
 
-        <label class="slider">
-          <span>Margen <output data-for="padding"></output></span>
-          <input type="range" name="padding" min="0" max="200" />
-        </label>
-        <label class="slider">
-          <span>Esquinas <output data-for="radius"></output></span>
-          <input type="range" name="radius" min="0" max="40" />
-        </label>
-        <label class="slider">
-          <span>Sombra <output data-for="shadow"></output></span>
-          <input type="range" name="shadow" min="0" max="100" />
-        </label>
-
-        <label class="field">
-          <span>Proporción</span>
-          <select name="ratio"></select>
-        </label>
-        <label class="check">
-          <input type="checkbox" id="balance-toggle" />
-          Equilibrar captura
-        </label>
-        <label class="field">
-          <span>Marca de agua</span>
-          <input type="text" name="watermark" placeholder="@tu_usuario" />
-        </label>
-
-        <fieldset id="presets" class="presets">
-          <legend>Presets</legend>
-          <select id="preset-select" aria-label="Preset guardado"></select>
-          <input type="text" id="preset-name" placeholder="Nombre del preset" aria-label="Nombre del preset" />
-          <div class="preset-actions">
-            <button type="button" id="preset-save" class="secondary compact">Guardar</button>
-            <button type="button" id="preset-delete" class="secondary compact">Borrar</button>
+          <div class="field">
+            <div class="field-label"><span>Padding</span><button type="button" class="value" data-value-for="padding"></button></div>
+            <input type="range" class="slider" name="padding" aria-label="Padding" />
           </div>
-        </fieldset>
 
-        <fieldset>
-          <legend>Tachar automáticamente</legend>
-          <div id="redact-options" class="checks"></div>
-        </fieldset>
+          <div class="field">
+            <div class="field-label">
+              <span>Inset</span><button type="button" class="value" data-value-for="inset"></button>
+              <span class="hint" id="inset-status"></span>
+            </div>
+            <div class="inset-row">
+              <input type="range" class="slider" name="inset" aria-label="Inset" />
+              <label class="checkbox"><input type="checkbox" id="balance-toggle" />Balance</label>
+              <input type="color" class="color-well" id="inset-color" title="Color del inset" aria-label="Color del inset" />
+            </div>
+          </div>
 
-        <div class="actions">
-          <button id="copy-button" type="button" disabled>Copiar <kbd>⌘C</kbd></button>
-          <button id="save-button" type="button" class="secondary" disabled>Guardar <kbd>⌘S</kbd></button>
-          <button type="button" class="secondary" data-action="capture">Nueva captura</button>
-          <button type="button" id="open-button" class="secondary" title="Abrir una imagen PNG o JPEG (⌘O). También puedes arrastrarla aquí.">Abrir… <kbd>⌘O</kbd></button>
-          <button type="button" id="text-button" class="secondary" title="Ver y copiar el texto de la captura" disabled>Texto</button>
-          <button type="button" id="history-button" class="secondary">Historial</button>
-          <button type="button" id="settings-button" class="secondary" title="Ajustes (⌘,)">Ajustes</button>
-        </div>
-        <p id="status" class="status" role="status"></p>
-      </aside>
-    </main>
+          <div class="two-columns">
+            <div class="field">
+              <div class="field-label"><span>Rounded</span><button type="button" class="value" data-value-for="radius"></button></div>
+              <input type="range" class="slider" name="radius" aria-label="Rounded" />
+            </div>
+            <div class="field">
+              <div class="field-label"><span>Shadow</span><button type="button" class="value" data-value-for="shadow"></button></div>
+              <input type="range" class="slider" name="shadow" aria-label="Shadow" />
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label">Fondo</div>
+            <div class="background-grid" id="background-grid"></div>
+          </div>
+
+          <div class="field">
+            <div class="field-label spread">
+              <span>Ratio / Size</span><button type="button" class="link-button" id="ratio-custom" aria-haspopup="dialog">Personalizado…</button>
+            </div>
+            <div class="ratio-grid" id="ratio-grid"></div>
+          </div>
+
+          <div class="redact-row">
+            <label class="checkbox"><input type="checkbox" id="redact-toggle" />Redactar datos sensibles</label>
+            <span class="hint" id="redact-count">(encontrados 0)</span>
+            <button type="button" class="gear-button" id="redact-settings" title="Ajustes de redacción" aria-haspopup="dialog">
+              <span data-icon="gear" data-icon-size="19"></span>
+            </button>
+          </div>
+
+          <div class="field tight">
+            <label class="checkbox"><input type="checkbox" id="watermark-toggle" />Mostrar texto de marca de agua</label>
+            <input type="text" class="text-field" name="watermark" maxlength="80" aria-label="Texto de la marca de agua" />
+          </div>
+        </aside>
+      </main>
+    </div>
 
     <div id="history" class="history" role="dialog" aria-modal="true" aria-labelledby="history-title" hidden>
       <div class="history-panel">
@@ -130,29 +162,5 @@
       </div>
     </div>
 
-    <div id="settings" class="history" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
-      <div class="history-panel settings-panel">
-        <header class="history-header">
-          <h2 id="settings-title">Ajustes</h2>
-          <button type="button" id="settings-close" class="secondary compact">Cerrar</button>
-        </header>
-        <div class="settings-body">
-          <section class="settings-section">
-            <h3>General</h3>
-            <label class="check">
-              <input type="checkbox" id="dock-hidden" />
-              Ocultar icono del Dock
-            </label>
-            <p class="settings-hint">Snapclone seguirá en la barra de menús.</p>
-          </section>
-          <section class="settings-section">
-            <h3>Atajos de captura</h3>
-            <p class="settings-hint">Haz clic en un atajo y pulsa la nueva combinación. <kbd>Esc</kbd> cancela.</p>
-            <ul id="shortcut-list" class="shortcut-list"></ul>
-          </section>
-          <p id="settings-status" class="status" role="status"></p>
-        </div>
-      </div>
-    </div>
   </body>
 </html>

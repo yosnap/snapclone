@@ -1,51 +1,68 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { AnnotationEditor, type Tool } from "./annotation-editor";
-import { ANNOTATION_COLORS, type PixelateAnnotation, type Point, moved } from "./annotations";
+import { AnnotationEditor } from "./annotation-editor";
+import { type PixelateAnnotation, type Point, moved } from "./annotations";
 import {
+  REDACT_CATEGORIES,
   type RedactCategory,
+  type RedactMode,
   type SensitiveRegion,
-  bindRedactControls,
   defaultRedactSettings,
   detectSensitive,
   toPixelateAnnotations,
 } from "./auto-redact";
 import { type BalanceResult, analyzeBalance, balancedCanvas, readPixels } from "./balance";
 import { type CaptureDocument, parseCaptureDocument } from "./capture-document";
-import { bindControls } from "./controls";
 import { DocumentSaver } from "./document-saver";
-import { copyToClipboard, saveToFile } from "./export";
+import { BottomBar } from "./bottom-bar";
+import { copyToClipboard, prepareExport, quickSave, saveToFile } from "./export";
 import { HistoryView, type OpenedCapture, captureUrl } from "./history-view";
+import { fillIcons } from "./icons";
+import { bindInspector } from "./inspector";
 import { highlightDrops, listenNotices, openClipboard, openFile } from "./open-image";
 import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
+import { type MenuItem, closePopover, popoverContains } from "./popover";
 import { bindPresets } from "./presets";
-import { type Capture, layout, makeCapture, render } from "./render";
+import { bindRedactPanel } from "./redact-panel";
+import { type Capture, edgeColor, layout, makeCapture, outputCanvas, render } from "./render";
 import { bindReopen, reopenLast } from "./reopen-last";
 import { loadSettings, saveSetting } from "./settings";
-import { SettingsView } from "./settings-view";
 import { type ShortcutEntry, loadShortcuts } from "./shortcut-settings";
 import { defaultStyle } from "./style";
 import { TextView } from "./text-view";
+import { bindTopToolbar } from "./top-toolbar";
 import { isEditableTarget } from "./ui-helpers";
 import { requestWallpaper, wallpaperError } from "./wallpaper";
+import { Zoom } from "./zoom";
 
 type CaptureReady = { id: string; scale: number };
 
+fillIcons();
 const canvas = document.querySelector<HTMLCanvasElement>("#editor-canvas")!;
+const canvasArea = document.querySelector<HTMLElement>("#canvas-area")!;
 const emptyState = document.querySelector<HTMLElement>("#empty-state")!;
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const status = document.querySelector<HTMLElement>("#status")!;
-const copyButton = document.querySelector<HTMLButtonElement>("#copy-button")!;
-const saveButton = document.querySelector<HTMLButtonElement>("#save-button")!;
-const toolbar = document.querySelector<HTMLElement>("#toolbar")!;
+const titlebar = document.querySelector<HTMLElement>(".titlebar")!;
+const shareButton = document.querySelector<HTMLButtonElement>("#share-button")!;
 const textEntry = document.querySelector<HTMLInputElement>("#text-entry")!;
 const balanceToggle = document.querySelector<HTMLInputElement>("#balance-toggle")!;
-const historyButton = document.querySelector<HTMLButtonElement>("#history-button")!;
-const settingsButton = document.querySelector<HTMLButtonElement>("#settings-button")!;
-const textButton = document.querySelector<HTMLButtonElement>("#text-button")!;
+/** How long a message stays over the canvas; errors stay longer. */
+const STATUS_MS = 3500;
+const ERROR_STATUS_MS = 8000;
+let statusTimer: number | undefined;
 
 const style = defaultStyle();
 const redactSettings = defaultRedactSettings();
+/** The main checkbox and the way regions are hidden; the categories are `redactSettings`. */
+const redactPreferences = { enabled: true, mode: "pixelate" as RedactMode, categories: redactSettings };
+/**
+ * Automatic regions taken off the capture by a checkbox, as they were then (moved, some
+ * deleted), so turning it back on restores exactly that instead of every detection.
+ */
+let stashedRedactions = new Map<RedactCategory, PixelateAnnotation[]>();
+/** Shows how many regions were found (null while searching); replaced once bound. */
+let showFound: (found: number | null) => void = () => {};
 /** What the editor shows: the capture as taken, or its balanced version. */
 let capture: Capture | null = null;
 /** The capture as taken; detection boxes and balancing always refer to it. */
@@ -98,8 +115,14 @@ const editor = new AnnotationEditor(
   },
 );
 
+/** Reflects the editor's tool and colour on the title bar; replaced once it is bound. */
+let syncToolbar = () => {};
+
+const zoom = new Zoom(canvasArea, canvas, () => capture?.scale ?? null, (label) => bottomBar.setZoomLabel(label));
+
 function scheduleDocumentSave(): void {
-  if (!captureId) return;
+  // The development preview has no history to save into.
+  if (!captureId || outsideTauri) return;
   documentSaver.schedule(captureId, currentDocument);
 }
 
@@ -113,13 +136,25 @@ function currentDocument(): CaptureDocument {
   };
 }
 
-function scheduleRender(): void {
+/**
+ * Bumped by every change that can alter the exported image, so the file prepared for
+ * "Arrástrame" and "Compartir" is reused until it is out of date.
+ */
+let exportVersion = 0;
+let preparedVersion = -1;
+let preparing: Promise<boolean> | null = null;
+
+/** `changed` is false for the redraw after an export, which changes nothing. */
+function scheduleRender(changed = true): void {
+  if (changed) exportVersion++;
   if (!capture || renderQueued) return;
   renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
     if (!capture) return;
     render(canvas, capture, style, editor.overlay(true));
+    canvas.classList.toggle("transparent", style.background.kind === "none");
+    zoom.update();
     editor.syncTextEntry();
   });
 }
@@ -131,7 +166,7 @@ function scheduleRender(): void {
  */
 function requireWallpaper(): void {
   if (style.background.kind !== "wallpaper") return;
-  requestWallpaper().then(scheduleRender, (error) =>
+  requestWallpaper().then(() => scheduleRender(), (error) =>
     showStatus(`No se pudo usar el fondo de escritorio (${wallpaperError(error)}); se muestra el degradado por defecto`, true),
   );
 }
@@ -143,7 +178,11 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   image.crossOrigin = "anonymous";
   image.src = captureUrl(id);
   await image.decode();
+  showImage(image, scale, id, saved);
+}
 
+function showImage(image: HTMLImageElement, scale: number, id: string, saved: CaptureDocument | null = null): void {
+  closePopover();
   // The previous capture's pending edits are built from the current state: save them first.
   void documentSaver.flush();
   original = makeCapture(image, scale);
@@ -152,6 +191,7 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   shift = { x: 0, y: 0 };
   detectedRegions = [];
   detectedFor = null;
+  stashedRedactions = new Map();
   editor.reset();
   emptyState.hidden = true;
   canvas.hidden = false;
@@ -159,6 +199,8 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   syncExportButtons();
   // The document's own style, or the defaults for a new capture; neither is persisted here.
   applyStoredStyle(style, saved?.style ?? defaults.style);
+  // A colour picked for the previous capture's inset does not fit this one.
+  style.insetColor = null;
   balanceToggle.checked = saved?.balance ?? defaults.balance;
   refreshControls();
   if (balanceToggle.checked) applyBalance(true);
@@ -169,7 +211,8 @@ async function loadCapture({ id, scale }: CaptureReady, saved: CaptureDocument |
   }
   requireWallpaper();
   // Skip Vision entirely while every category is off; enabling one runs it on demand.
-  if (Object.values(redactSettings).some(Boolean)) runAutoRedaction(id);
+  showFound(0);
+  if (!outsideTauri && anyRedaction()) runAutoRedaction(id);
   scheduleRender();
 }
 
@@ -194,6 +237,7 @@ function captureDeleted(id: string): void {
   balanceCache = null;
   detectedRegions = [];
   detectedFor = null;
+  stashedRedactions = new Map();
   editor.reset();
   canvas.hidden = true;
   emptyState.hidden = false;
@@ -237,9 +281,16 @@ function applyBalance(enabled: boolean): void {
       );
     }
   }
-  editor.translate(offset.x - shift.x, offset.y - shift.y);
+  const dx = offset.x - shift.x;
+  const dy = offset.y - shift.y;
+  editor.translate(dx, dy);
+  for (const [category, regions] of stashedRedactions) {
+    stashedRedactions.set(category, regions.map((region) => moved(region, dx, dy) as PixelateAnnotation));
+  }
   shift = offset;
   capture = target;
+  // The inset colour shown is the edge colour of the capture now shown.
+  refreshControls();
   scheduleRender();
   scheduleDocumentSave();
 }
@@ -251,19 +302,80 @@ function shifted(regions: PixelateAnnotation[]): PixelateAnnotation[] {
 
 function syncExportButtons(): void {
   const blocked = !capture || detectingFor === captureId;
-  copyButton.disabled = blocked;
-  saveButton.disabled = blocked;
-  textButton.disabled = !capture;
+  bottomBar.setExportEnabled(!blocked);
+  shareButton.disabled = blocked;
 }
 
 function regionsOf(category: RedactCategory): PixelateAnnotation[] {
   return detectedRegions.filter((region) => region.auto === category);
 }
 
+function categoryApplies(category: RedactCategory): boolean {
+  return redactPreferences.enabled && redactSettings[category];
+}
+
+/** Vision is skipped entirely while nothing would be redacted; enabling runs it on demand. */
+function anyRedaction(): boolean {
+  return redactPreferences.enabled && Object.values(redactSettings).some(Boolean);
+}
+
+/** Detected regions placed on the capture shown and hidden the way the user chose. */
+function applicable(regions: PixelateAnnotation[]): PixelateAnnotation[] {
+  const mode = redactPreferences.mode === "solid" ? { mode: "solid" as const } : {};
+  return shifted(regions).map((region) => ({ ...region, ...mode }));
+}
+
+/** Takes a category's regions off the capture, remembering them as they are now. */
+function hideCategory(category: RedactCategory): void {
+  if (detectedFor !== captureId) return;
+  stashedRedactions.set(category, editor.autoRedactions(category));
+  editor.removeAutoRedactions(category);
+}
+
+/**
+ * Puts a category's regions back: as they were when hidden, or as detected the first
+ * time. Detection runs when it has not yet for this capture.
+ */
+function showCategory(category: RedactCategory): void {
+  if (!captureId) return;
+  if (detectedFor !== captureId) {
+    runAutoRedaction(captureId);
+    return;
+  }
+  const stashed = stashedRedactions.get(category);
+  stashedRedactions.delete(category);
+  const regions = stashed ?? applicable(regionsOf(category));
+  const mode = redactPreferences.mode === "solid" ? { mode: "solid" as const } : {};
+  editor.addAutoRedactions(regions.map(({ mode: _previous, ...region }) => ({ ...region, ...mode })));
+}
+
+/** The main checkbox changed: every category it governs follows. */
+function enabledChanged(): void {
+  saveSetting("autoRedact", redactPreferences.enabled);
+  if (!capture || !captureId) return;
+  for (const { id } of REDACT_CATEGORIES) {
+    if (!redactSettings[id]) continue;
+    if (redactPreferences.enabled) showCategory(id);
+    else hideCategory(id);
+  }
+}
+
+/**
+ * The one redaction mode, shared by the Redactar tool and automatic redaction. The
+ * automatic regions on the capture take it where they are; none is re-added.
+ */
+function setRedactMode(mode: RedactMode): void {
+  redactPreferences.mode = mode;
+  editor.redactMode = mode;
+  saveSetting("redactMode", mode);
+  editor.setAutoRedactionMode(mode);
+}
+
 async function runAutoRedaction(id: string): Promise<void> {
   if (detectedFor === id || detectingFor === id) return;
   detectingFor = id;
   syncExportButtons();
+  showFound(null);
   showStatus(SEARCHING_MESSAGE);
   try {
     const regions: SensitiveRegion[] = await detectSensitive(id);
@@ -271,8 +383,9 @@ async function runAutoRedaction(id: string): Promise<void> {
     if (id !== captureId || !original) return;
     detectedRegions = toPixelateAnnotations(regions, original.width, original.height, original.scale);
     detectedFor = id;
-    const enabled = detectedRegions.filter((region) => region.auto && redactSettings[region.auto]);
-    editor.addAutoRedactions(shifted(enabled));
+    showFound(detectedRegions.length);
+    const enabled = detectedRegions.filter((region) => region.auto && categoryApplies(region.auto));
+    editor.addAutoRedactions(applicable(enabled));
     // Only replace our own progress message, never an export confirmation shown meanwhile.
     if (status.textContent === SEARCHING_MESSAGE) {
       showStatus(enabled.length > 0 ? `Tachados automáticamente: ${enabled.length}` : "");
@@ -281,33 +394,37 @@ async function runAutoRedaction(id: string): Promise<void> {
     if (id === captureId) showStatus(`No se pudo analizar el texto, revisa la captura antes de compartirla: ${error}`, true);
   } finally {
     if (detectingFor === id) detectingFor = null;
+    if (id === captureId && detectedFor !== id) showFound(0);
     syncExportButtons();
   }
 }
 
 function toggleRedaction(category: RedactCategory, enabled: boolean): void {
   saveSetting("redact", { ...redactSettings });
-  if (!capture || !captureId) return;
-  if (!enabled) {
-    editor.removeAutoRedactions(category);
-  } else if (detectedFor === captureId) {
-    editor.addAutoRedactions(shifted(regionsOf(category)));
-  } else {
-    runAutoRedaction(captureId);
-  }
+  if (!capture || !captureId || !redactPreferences.enabled) return;
+  if (enabled) showCategory(category);
+  else hideCategory(category);
 }
 
 function showStatus(message: string, isError = false): void {
+  window.clearTimeout(statusTimer);
   status.textContent = message;
   status.classList.toggle("error", isError);
+  status.hidden = !message;
+  if (message) {
+    statusTimer = window.setTimeout(() => {
+      // A newer message keeps its own timer.
+      if (status.textContent === message && message !== SEARCHING_MESSAGE) status.hidden = true;
+    }, isError ? ERROR_STATUS_MS : STATUS_MS);
+  }
 }
 
 /** Renders synchronously before exporting, so a pending frame never leaks into the output. */
-async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string | null>, failure: string) {
-  if (!capture || exporting) return;
+async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string | null>, failure: string): Promise<boolean> {
+  if (!capture || exporting) return false;
   if (detectingFor === captureId) {
     showStatus("Espera a que termine la búsqueda de datos sensibles", true);
-    return;
+    return false;
   }
   exporting = true;
   try {
@@ -317,17 +434,19 @@ async function exportWith(action: (canvas: HTMLCanvasElement) => Promise<string 
         await requestWallpaper();
       } catch (error) {
         showStatus(`No se ha exportado: el fondo de escritorio no está disponible (${wallpaperError(error)})`, true);
-        return;
+        return false;
       }
     }
     render(canvas, capture, style, editor.overlay(false));
-    const message = await action(canvas);
+    const message = await action(outputCanvas(canvas, style));
     if (message) showStatus(message);
+    return true;
   } catch (error) {
     showStatus(`${failure}: ${error}`, true);
+    return false;
   } finally {
     exporting = false;
-    scheduleRender();
+    scheduleRender(false);
   }
 }
 
@@ -337,8 +456,86 @@ const copy = () =>
     return "Copiada al portapapeles";
   }, "No se pudo copiar");
 
-const saveImage = () =>
+
+const saveAs = () =>
   exportWith(async (target) => ((await saveToFile(target)) ? "Imagen guardada" : null), "No se pudo guardar");
+
+const save = () =>
+  exportWith(async (target) => {
+    const path = await quickSave(target);
+    return path ? `Guardada en ${path}` : null;
+  }, "No se pudo guardar");
+
+/** Double-click on the background: copy, then close the editor like its close button. */
+async function copyAndClose(): Promise<void> {
+  if (!(await copy())) return;
+  invoke("close_editor").catch((error) => showStatus(`No se pudo cerrar el editor: ${error}`, true));
+}
+
+/** The image file "Compartir" and "Arrástrame" hand to macOS, written by Rust. */
+/**
+ * The image file "Compartir" and "Arrástrame" hand to macOS, written by Rust. It is kept
+ * while nothing changes, so a drag can start on the first movement of the press.
+ */
+function prepareShared(): Promise<boolean> {
+  if (capture && preparedVersion === exportVersion) return Promise.resolve(true);
+  if (preparing) return preparing;
+  const version = exportVersion;
+  preparing = exportWith(async (target) => (await prepareExport(target), null), "No se pudo preparar la imagen")
+    .then((ready) => {
+      if (ready) preparedVersion = version;
+      return ready;
+    })
+    .finally(() => (preparing = null));
+  return preparing;
+}
+
+async function share(anchor: HTMLElement): Promise<void> {
+  if (!(await prepareShared())) return;
+  const box = anchor.getBoundingClientRect();
+  const position = { x: box.left, y: box.top, width: box.width, height: box.height };
+  invoke("share_export", { anchor: position }).catch((error) => showStatus(`No se pudo compartir: ${error}`, true));
+}
+
+function copyDetectedText(): void {
+  if (!captureId) return;
+  invoke<number>("copy_capture_text", { id: captureId }).then(
+    (lines) => showStatus(lines === 1 ? "Copiada 1 línea de texto" : `Copiadas ${lines} líneas de texto`),
+    (error) => showStatus(String(error), true),
+  );
+}
+
+function revealSaved(): void {
+  invoke("reveal_saved").catch((error) => showStatus(`No se pudo abrir el Finder: ${error}`, true));
+}
+
+function moreItems(): MenuItem[] {
+  const noCapture = !capture;
+  return [
+    { label: "Abrir en el Finder", action: revealSaved },
+    { label: "Copiar texto detectado", action: copyDetectedText, disabled: noCapture },
+    { label: "Ver texto detectado…", action: () => captureId && void textView.show(captureId), disabled: noCapture },
+    "separator",
+    { label: "Nueva captura", action: startCapture },
+    { label: "Abrir archivo…", shortcut: "⌘O", action: () => openFile(showStatus) },
+    { label: "Historial", action: () => void historyView.show() },
+    "separator",
+    { label: "Deshacer", shortcut: "⌘Z", action: () => editor.undo(), disabled: noCapture },
+    { label: "Rehacer", shortcut: "⇧⌘Z", action: () => editor.redo(), disabled: noCapture },
+    "separator",
+    { label: "Ajustes…", shortcut: "⌘,", action: openSettings },
+  ];
+}
+
+const bottomBar = new BottomBar(zoom, {
+  // Rust closes the editor after copying when "Cerrar la captura después de copiarla" is on.
+  copy: () => void copy(),
+  save,
+  saveAs,
+  prepareDrag: prepareShared,
+  dragFailed: (error) => showStatus(`No se pudo arrastrar la imagen: ${error}`, true),
+  moreItems,
+});
 
 function startCapture(): void {
   if (outsideTauri) return;
@@ -360,9 +557,20 @@ async function init(): Promise<void> {
   defaults.balance = settings.balance;
   applyStoredStyle(style, settings.style);
   Object.assign(redactSettings, settings.redact);
+  redactPreferences.enabled = settings.autoRedact;
+  redactPreferences.mode = settings.redactMode;
+  editor.redactMode = settings.redactMode;
+  editor.requestRedactMode = setRedactMode;
   editor.setColor(settings.annotationColor);
+  editor.options = settings.toolOptions;
+  editor.onOptionsChange = (options) => saveSetting("toolOptions", options);
 
-  refreshControls = bindControls(sidebar, style, styleChanged, requireWallpaper);
+  refreshControls = bindInspector(sidebar, style, {
+    changed: styleChanged,
+    previewed: () => scheduleRender(),
+    wallpaperPicked: requireWallpaper,
+    edgeColor: () => (capture ? edgeColor(capture) : null),
+  });
   bindPresets(sidebar.querySelector<HTMLElement>("#presets")!, settings.presets, {
     current: () => toStoredStyle(style),
     apply: (stored) => {
@@ -374,17 +582,32 @@ async function init(): Promise<void> {
     persist: (presets) => saveSetting("presets", presets),
     notify: (message) => showStatus(message),
   });
-  bindRedactControls(sidebar.querySelector<HTMLElement>("#redact-options")!, redactSettings, toggleRedaction);
+  showFound = bindRedactPanel(sidebar, redactPreferences, {
+    enabledChanged,
+    categoryChanged: toggleRedaction,
+    modeChanged: setRedactMode,
+  });
   balanceToggle.checked = settings.balance;
   balanceToggle.addEventListener("change", () => {
     defaults.balance = balanceToggle.checked;
     saveSetting("balance", balanceToggle.checked);
     applyBalance(balanceToggle.checked);
   });
-  buildToolbar();
+  syncToolbar = bindTopToolbar(titlebar, editor, {
+    colorChanged: (color) => saveSetting("annotationColor", color),
+    share: (anchor) => void share(anchor),
+    notify: showStatus,
+  });
+  editor.setTool("select");
 
-  // The Vite dev server is reachable from any browser, but only the Tauri window has the Rust bridge.
+  // The Vite dev server is reachable from any browser, but only the Tauri window has the Rust
+  // bridge. In development, `?preview=1` loads a sample capture to check the layout instead.
   if (outsideTauri) {
+    if (import.meta.env.DEV && new URLSearchParams(location.search).has("preview")) {
+      const { loadPreview } = await import("./dev-preview");
+      await loadPreview((image) => showImage(image, 2, "preview"));
+      return;
+    }
     document.querySelectorAll<HTMLButtonElement>("button").forEach((button) => (button.disabled = true));
     showStatus("Esto es la vista web en un navegador. Usa la ventana de Snapclone que abre «npm run tauri dev».", true);
   }
@@ -396,22 +619,20 @@ init().catch((error) => showStatus(`No se pudo iniciar el editor: ${error}`, tru
 document.querySelectorAll<HTMLButtonElement>("[data-action=capture]").forEach((button) => {
   button.addEventListener("click", startCapture);
 });
-copyButton.addEventListener("click", copy);
-// ⌘O reaches Rust through the File menu, which works with the editor hidden too.
-document.querySelector<HTMLButtonElement>("#open-button")!.addEventListener("click", () => openFile(showStatus));
-saveButton.addEventListener("click", saveImage);
+canvas.addEventListener("dblclick", (event) => {
+  if (capture && editor.tool === "select" && !editor.isOverCapture(event)) void copyAndClose();
+});
+canvasArea.addEventListener("dblclick", (event) => {
+  if (capture && event.target === canvasArea.firstElementChild) void copyAndClose();
+});
 
 const historyView = new HistoryView({
   open: reopenCapture,
   deleted: captureDeleted,
   notify: showStatus,
 });
-historyButton.addEventListener("click", () => historyView.show());
 
 const textView = new TextView();
-textButton.addEventListener("click", () => {
-  if (captureId) void textView.show(captureId);
-});
 
 /** The empty editor names the zone shortcut as it is configured right now. */
 function showZoneShortcut(entries: ShortcutEntry[]): void {
@@ -426,12 +647,10 @@ function showZoneShortcut(entries: ShortcutEntry[]): void {
   hint.replaceChildren("Pulsa ", key, " o usa el icono de la barra de menús.");
 }
 
-const settingsView = new SettingsView(showZoneShortcut);
+/** The Preferences window, opened by Rust like "Ajustes…" in the menus. */
 function openSettings(): void {
-  historyView.close();
-  settingsView.show().catch((error) => showStatus(`No se pudieron abrir los ajustes: ${error}`, true));
+  invoke("open_settings").catch((error) => showStatus(`No se pudieron abrir los ajustes: ${error}`, true));
 }
-settingsButton.addEventListener("click", openSettings);
 
 document.addEventListener("keydown", (event) => {
   if (historyView.isOpen || textView.isOpen) {
@@ -441,7 +660,7 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if (settingsView.isOpen) return;
+  if (popoverContains(event.target)) return;
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
   const inForm = editingText || event.target instanceof HTMLSelectElement;
   // ⇧⌘Z: native redo in a field, the editor's redo with a capture, otherwise reopen the last one.
@@ -456,13 +675,36 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
-  if (!event.metaKey || event.shiftKey || event.altKey || event.repeat) return;
-  if (event.key === "c" && !editingText) {
+  if (event.metaKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === "s") {
     event.preventDefault();
-    copy();
+    saveAs();
+    return;
+  }
+  if (!event.metaKey || event.shiftKey || event.altKey) {
+    // ⌘+ is ⇧⌘= on most layouts.
+    if (event.metaKey && !event.altKey && event.key === "+") {
+      event.preventDefault();
+      zoom.zoomIn();
+    }
+    return;
+  }
+  if (event.key === "=" || event.key === "+") {
+    event.preventDefault();
+    zoom.zoomIn();
+  } else if (event.key === "-") {
+    event.preventDefault();
+    zoom.zoomOut();
+  } else if (event.key === "0") {
+    event.preventDefault();
+    zoom.set("fit");
+  } else if (event.repeat) {
+    return;
+  } else if (event.key === "c" && !editingText) {
+    event.preventDefault();
+    void copy();
   } else if (event.key === "s") {
     event.preventDefault();
-    saveImage();
+    save();
   } else if (event.key === "v" && !isEditableTarget(event.target) && !outsideTauri) {
     event.preventDefault();
     openClipboard(showStatus);
@@ -476,56 +718,24 @@ if (!outsideTauri) {
   listen<CaptureReady>("capture-ready", (event) => {
     historyView.close();
     textView.close();
-    settingsView.close();
     loadCapture(event.payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
   listenNotices(showStatus);
   bindReopen((id) => {
     historyView.close();
     textView.close();
-    settingsView.close();
     return reopenCapture(id);
   }, showStatus);
   highlightDrops(document.querySelector<HTMLElement>(".canvas-area")!);
-  // "Ajustes…" in the app menu (⌘,) and in the menu bar icon.
-  listen("open-settings", openSettings);
+  // "Ver historial" in the Preferences window.
+  listen("open-history", () => {
+    textView.close();
+    void historyView.show();
+  });
+  // A shortcut changed in the Preferences window.
+  listen<ShortcutEntry[]>("shortcuts-changed", (event) => showZoneShortcut(event.payload));
   listen<string>("capture-failed", (event) => {
     historyView.close();
     showStatus(`No se pudo hacer la captura: ${event.payload}`, true);
-  });
-}
-
-function buildToolbar(): void {
-  const colors = toolbar.querySelector<HTMLElement>("#annotation-colors")!;
-  for (const color of ANNOTATION_COLORS) {
-    const swatch = document.createElement("button");
-    swatch.type = "button";
-    swatch.className = "color-swatch";
-    swatch.dataset.color = color;
-    swatch.title = color;
-    swatch.style.background = color;
-    colors.append(swatch);
-  }
-  toolbar.addEventListener("click", (event) => {
-    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
-    if (!button) return;
-    if (button.dataset.tool) editor.setTool(button.dataset.tool as Tool);
-    else if (button.dataset.color) {
-      editor.setColor(button.dataset.color);
-      saveSetting("annotationColor", editor.color);
-    }
-    else if (button.dataset.history === "undo") editor.undo();
-    else if (button.dataset.history === "redo") editor.redo();
-    syncToolbar();
-  });
-  editor.setTool("select");
-}
-
-function syncToolbar(): void {
-  toolbar.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
-    button.setAttribute("aria-pressed", String(button.dataset.tool === editor.tool));
-  });
-  toolbar.querySelectorAll<HTMLButtonElement>("[data-color]").forEach((button) => {
-    button.setAttribute("aria-pressed", String(button.dataset.color === editor.color));
   });
 }
