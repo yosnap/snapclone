@@ -104,19 +104,18 @@ export const SOCIAL_SIZES: RatioChoice[] = [
 
 /**
  * Every gradient, by index; stored styles refer to them by index, so new ones are only ever
- * appended. The first nine come from the presets embedded in Xnapper (CSS angles, 0deg =
- * upwards); the rest are Snapclone's own.
+ * appended. CSS angles, 0deg = upwards.
  */
 export const GRADIENT_PRESETS: GradientBackground[] = [
-  gradient(50, ["hsla(297, 59%, 34%, 1)", "hsla(345, 74%, 58%, 1)", "hsla(22, 87%, 56%, 1)"]),
-  gradient(50, ["#02aab0", "#00cdac"]),
-  gradient(50, ["hsla(331, 78%, 69%, 1)", "hsla(238, 82%, 70%, 1)"]),
-  gradient(50, ["hsla(31, 90%, 76%, 1)", "hsla(302, 82%, 76%, 1)"]),
-  gradient(50, ["hsla(29, 92%, 70%, 1)", "hsla(0, 87%, 73%, 1)"]),
-  gradient(160, ["#0093E9", "#80D0C7"]),
-  gradient(90, ["#ED8F03", "#FFB75E"]),
-  gradient(90, ["#F15F79", "#B24592"]),
-  gradient(90, ["#8E54E9", "#4776E6"]),
+  gradient(45, ["#6a2c91", "#d6457a", "#f08a4b"]),
+  gradient(45, ["#0f9b8e", "#3ad6a4"]),
+  gradient(45, ["#e97bb4", "#7a7ff0"]),
+  gradient(45, ["#f6c89a", "#e8a3e6"]),
+  gradient(45, ["#f4a66a", "#f07c84"]),
+  gradient(150, ["#1f8ef1", "#7fd6cf"]),
+  gradient(100, ["#e8870c", "#ffc36b"]),
+  gradient(100, ["#ee5a7a", "#a43f9e"]),
+  gradient(100, ["#9b5de5", "#4f6fe0"]),
   // Beach: shallow water.
   gradient(160, ["#16b8a0", "#22c7b4", "#5fd8cc"], [{ x: 0.2, y: 0.15, radius: 0.6, color: "rgba(255, 255, 255, 0.28)" }]),
   // Rose: pink and coral with a cool corner.
@@ -138,7 +137,7 @@ const WALLPAPER_THUMBNAIL_URL = `${WALLPAPER_URL}/thumbnail`;
 export const WALLPAPER_BACKGROUND: Extract<Background, { kind: "wallpaper" }> = { kind: "wallpaper", image: null };
 export const NO_BACKGROUND: Extract<Background, { kind: "none" }> = { kind: "none" };
 
-/** The grid of the panel, in Xnapper's order; "Más…" follows it. */
+/** The grid of the panel; "Más…" follows it. */
 export const NAMED_BACKGROUNDS: { label: string; background: Background }[] = [
   { label: "Escritorio", background: WALLPAPER_BACKGROUND },
   { label: "Cool", background: GRADIENT_PRESETS[5] },

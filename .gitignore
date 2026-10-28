@@ -22,3 +22,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local planning notes and reports
+plans/
+
+# Other package managers; the project uses npm
+pnpm-lock.yaml
+
+# Release artefacts
+release/
