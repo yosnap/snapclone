@@ -1,0 +1,3 @@
+# Invented keys in the redaction tests.
+4183736b9d35dc6c7fa288cbebfa065dc6450121:src-tauri/src/redact.rs:generic-api-key:268
+cadb7df6332298fcba6ed73fa93cd5157b414b00:src-tauri/src/redact.rs:generic-api-key:208

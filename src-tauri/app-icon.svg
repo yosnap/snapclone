@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7b5cf0"/>
+      <stop offset="1" stop-color="#e2558f"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eef0ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="300" y="330" width="424" height="330" rx="36" fill="url(#card)" opacity="0.95"/>
+  <rect x="300" y="330" width="424" height="64" rx="32" fill="#ffffff"/>
+  <circle cx="340" cy="362" r="11" fill="#ff6b6b"/>
+  <circle cx="375" cy="362" r="11" fill="#ffc35c"/>
+  <circle cx="410" cy="362" r="11" fill="#4fd18b"/>
+  <g fill="none" stroke="#ffffff" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M220 330 V250 H300"/>
+    <path d="M724 250 H804 V330"/>
+    <path d="M804 660 V740 H724"/>
+    <path d="M300 740 H220 V660"/>
+  </g>
+</svg>

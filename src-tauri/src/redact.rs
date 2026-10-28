@@ -1,6 +1,6 @@
 //! Automatic redaction: Vision reads the capture's text (see `ocr`) and regexes choose what to hide.
-//! Patterns start from the ones Xnapper ships, tightened where they misfire on ordinary
-//! text (times read as IPv6, any digit run read as a card number).
+//! The patterns are tightened where common ones misfire on ordinary text (times read as IPv6,
+//! any digit run read as a card number).
 
 use std::{ops::Range, sync::LazyLock};
 
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn paths_are_not_keys_but_base64_secrets_are() {
-        assert!(categories("/Users/paulo/Proyectos/app2/src/main.rs").is_empty());
+        assert!(categories("/Users/ana/Proyectos/app2/src/main.rs").is_empty());
         let secret = "dGhpc2lzYWZha2VzZWNyZXQxMjM0NTY3ODkw+abc==";
         assert_eq!(categories(secret), vec![(Category::ApiKey, secret)]);
     }
