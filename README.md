@@ -4,6 +4,8 @@ Snapclone es una app de barra de menús para macOS que hace capturas de pantalla
 
 > Estado: versión 0.x, en desarrollo activo. Hasta la 1.0 puede haber cambios de comportamiento entre versiones.
 
+![Editor de Snapclone con una captura sobre un fondo degradado](docs/images/editor.png)
+
 ## Funciones
 
 - Captura de zona, ventana, pantalla completa y con scroll, con atajos configurables.
@@ -12,6 +14,18 @@ Snapclone es una app de barra de menús para macOS que hace capturas de pantalla
 - Anotaciones: flecha, rectángulo, texto y pixelado o tapado.
 - Tachado automático de correos, tarjetas, IP y claves, gracias al reconocimiento de texto de Vision.
 - Historial de capturas, texto detectado, abrir imágenes desde un archivo o el portapapeles, arrastrar y compartir.
+
+## Capturas
+
+Todos los datos que aparecen son inventados.
+
+| Tachado automático | Anotaciones |
+|---|---|
+| ![El correo, la tarjeta y la IP se pixelan solos](docs/images/tachado-automatico.png) | ![Rectángulo, flecha y texto sobre la captura](docs/images/anotaciones.png) |
+
+| Ajustes | Menú de la barra |
+|---|---|
+| ![Ventana de ajustes con los atajos de captura](docs/images/ajustes.png) | ![Menú de Snapclone en la barra de menús](docs/images/menu-barra.png) |
 
 ## Requisitos
 
@@ -26,7 +40,7 @@ Snapclone es una app de barra de menús para macOS que hace capturas de pantalla
    shasum -a 256 ~/Downloads/Snapclone_*_universal.dmg
    ```
 3. Abre el `.dmg` y arrastra **Snapclone** a la carpeta **Aplicaciones**.
-4. Abre Snapclone desde Aplicaciones. No tiene ventana ni icono en el Dock: aparece como un icono en la barra de menús, arriba a la derecha.
+4. Abre Snapclone desde Aplicaciones. Aparece como un icono en la barra de menús, arriba a la derecha, y también en el Dock. Si prefieres que solo esté en la barra de menús, activa «Ocultar el icono del Dock» en Ajustes.
 
 La app está firmada con Developer ID y notarizada por Apple, así que macOS la abre sin avisos de seguridad.
 
