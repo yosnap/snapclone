@@ -42,6 +42,12 @@ mod native {
             fn mouse_moved(&self, _event: &NSEvent) {
                 NSCursor::crosshairCursor().set();
             }
+
+            // Required, not optional: while the app is inactive, as during a selection,
+            // AppKit sends the exit of an always-active area without checking that the
+            // owner responds, and the unrecognised selector aborts the process.
+            #[unsafe(method(mouseExited:))]
+            fn mouse_exited(&self, _event: &NSEvent) {}
         }
     );
 
