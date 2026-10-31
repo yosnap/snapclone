@@ -1,6 +1,6 @@
 [package]
 name = "snapclone"
-version = "0.1.0"
+version = "0.1.1"
 description = "Capturas de pantalla embellecidas para macOS"
 authors = ["yosnap"]
 license = "MIT"
