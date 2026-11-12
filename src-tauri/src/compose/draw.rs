@@ -3,7 +3,7 @@
 //! watermark, and the final resampling to a fixed output size.
 
 use objc2_core_foundation::{CFAttributedString, CFBoolean, CFDictionary, CFRetained, CFString, CFType, CGAffineTransform, kCFBooleanTrue};
-use objc2_core_graphics::{CGContext, CGGradient, CGGradientDrawingOptions, CGImage, CGInterpolationQuality, CGPath};
+use objc2_core_graphics::{CGBlendMode, CGContext, CGGradient, CGGradientDrawingOptions, CGImage, CGPath};
 use objc2_core_text::{CTFont, CTFontUIFontType, CTLine, kCTFontAttributeName, kCTForegroundColorFromContextAttributeName};
 use xcap::image::RgbaImage;
 
@@ -17,7 +17,6 @@ use super::wallpaper::BlurredWallpaper;
 const SHADOW_COLOR: Color = Color { red: 0, green: 0, blue: 0, alpha: 115 };
 /// Vertical shadow offset as a share of its blur.
 const SHADOW_OFFSET: f64 = 0.4;
-const WATERMARK_ALPHA: f64 = 0.8;
 /// The inset colour when the capture has no edge to take it from.
 const WHITE: Color = Color { red: 255, green: 255, blue: 255, alpha: 255 };
 /// A glow fades to transparent white, like the editor's `rgba(255, 255, 255, 0)` stop.
@@ -36,14 +35,21 @@ pub fn compose(capture: &RgbaImage, scale: f64, style: &StoredStyle, wallpaper: 
     let capture_image = straight_image(capture)?;
     let card = rounded_card(&capture_image, width, height, &frame, fill)?;
     let (card_x, card_y, card_width, card_height) = frame.card(width, height);
-    let context = canvas.context();
-    CGContext::save_g_state(Some(context));
-    if style.shadow > 0.0 {
-        let blur = style.shadow * scale;
-        // WebKit hands canvas shadows to CoreGraphics with the blur unchanged.
-        CGContext::set_shadow_with_color(Some(context), Bitmap::offset(0.0, blur * SHADOW_OFFSET), blur, Some(&cg_color(SHADOW_COLOR)));
-    }
     let card_rect = canvas.rect(f64::from(card_x), f64::from(card_y), f64::from(card_width), f64::from(card_height));
+    let context = canvas.context();
+    let blur = style.shadow * scale;
+    let offset = blur * SHADOW_OFFSET;
+    CGContext::save_g_state(Some(context));
+    if blur > 0.0 && shadow_blur(blur) == 0.0 {
+        // A hard shadow: CoreGraphics rounds shadow offsets to whole pixels, while WebKit
+        // keeps the fraction, so the card's silhouette is drawn by hand where it belongs.
+        let silhouette = silhouette(&card, card_width, card_height, SHADOW_COLOR)?;
+        let shadow_rect = canvas.rect(f64::from(card_x), f64::from(card_y) + offset, f64::from(card_width), f64::from(card_height));
+        CGContext::draw_image(Some(context), shadow_rect, Some(&silhouette));
+    } else if blur > 0.0 {
+        // WebKit hands canvas shadows to CoreGraphics with the blur unchanged.
+        CGContext::set_shadow_with_color(Some(context), Bitmap::offset(0.0, offset), blur, Some(&cg_color(SHADOW_COLOR)));
+    }
     CGContext::draw_image(Some(context), card_rect, Some(&card));
     CGContext::restore_g_state(Some(context));
 
@@ -57,6 +63,13 @@ pub fn compose(capture: &RgbaImage, scale: f64, style: &StoredStyle, wallpaper: 
         }
         _ => Ok(canvas.to_rgba()),
     }
+}
+
+/// CoreGraphics blur for a canvas `shadowBlur`. WebKit passes larger values unchanged, but
+/// draws a blur of one pixel or less as a hard shadow, while CoreGraphics still softens it
+/// (measured against the editor at scale 1).
+fn shadow_blur(canvas_blur: f64) -> f64 {
+    if canvas_blur <= 1.0 { 0.0 } else { canvas_blur }
 }
 
 /// The capture's predominant edge colour, which fills the inset so the frame looks like a
@@ -111,17 +124,56 @@ fn cg_gradient(stops: impl Iterator<Item = (f64, Color)>) -> Result<CFRetained<C
         .ok_or_else(|| "could not create the gradient".to_string())
 }
 
-/// The blurred desktop picture scaled to cover the canvas, smoothed at high quality.
+/// The blurred desktop picture scaled to cover the canvas.
 fn paint_cover(canvas: &Bitmap, wallpaper: &BlurredWallpaper) -> Result<(), String> {
-    let image = premultiplied_image(wallpaper.pixels(), wallpaper.width(), wallpaper.height())?;
     let (width, height) = (f64::from(canvas.width()), f64::from(canvas.height()));
-    let (x, y, draw_width, draw_height) = cover_rect(f64::from(wallpaper.width()), f64::from(wallpaper.height()), width, height);
-    let context = canvas.context();
-    CGContext::save_g_state(Some(context));
-    CGContext::set_interpolation_quality(Some(context), CGInterpolationQuality::High);
-    CGContext::draw_image(Some(context), canvas.rect(x, y, draw_width, draw_height), Some(&image));
-    CGContext::restore_g_state(Some(context));
+    let destination = cover_rect(f64::from(wallpaper.width()), f64::from(wallpaper.height()), width, height);
+    let pixels = bilinear(wallpaper.pixels(), wallpaper.width(), wallpaper.height(), canvas.width(), canvas.height(), destination);
+    let image = premultiplied_image(&pixels, canvas.width(), canvas.height())?;
+    CGContext::draw_image(Some(canvas.context()), canvas.bounds(), Some(&image));
     Ok(())
+}
+
+/// Premultiplied pixels of `source` drawn into `destination` (x, y, width, height) on a
+/// `width` x `height` canvas, sampled bilinearly at pixel centres with edges clamped.
+///
+/// WebKit's accelerated canvas scales images on the GPU with plain bilinear filtering, also
+/// for `imageSmoothingQuality = "high"`; measured against the editor, this matches it
+/// within a level or two, while CoreGraphics' own interpolation steps visibly on large
+/// enlargements and uses a different kernel when reducing.
+fn bilinear(source: &[u8], source_width: u32, source_height: u32, width: u32, height: u32, destination: (f64, f64, f64, f64)) -> Vec<u8> {
+    let (x, y, draw_width, draw_height) = destination;
+    let (source_width, source_height) = (source_width as usize, source_height as usize);
+    let axis = |position: u32, origin: f64, size: f64, count: usize| {
+        let at = ((f64::from(position) + 0.5 - origin) * count as f64 / size - 0.5).clamp(0.0, (count - 1) as f64);
+        let low = at.floor() as usize;
+        (low, (low + 1).min(count - 1), at - low as f64)
+    };
+    let columns: Vec<_> = (0..width).map(|column| axis(column, x, draw_width, source_width)).collect();
+    let mut output = Vec::with_capacity(width as usize * height as usize * 4);
+    for row in 0..height {
+        let (y0, y1, fy) = axis(row, y, draw_height, source_height);
+        for &(x0, x1, fx) in &columns {
+            for channel in 0..4 {
+                let at = |column: usize, line: usize| f64::from(source[(line * source_width + column) * 4 + channel]);
+                let top = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
+                let bottom = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
+                output.push((top * (1.0 - fy) + bottom * fy).round() as u8);
+            }
+        }
+    }
+    output
+}
+
+/// The shape of `image` filled with `color`, keeping its alpha.
+fn silhouette(image: &CGImage, width: u32, height: u32, color: Color) -> Result<CFRetained<CGImage>, String> {
+    let layer = Bitmap::new(width, height)?;
+    let context = layer.context();
+    CGContext::draw_image(Some(context), layer.bounds(), Some(image));
+    CGContext::set_blend_mode(Some(context), CGBlendMode::SourceIn);
+    CGContext::set_fill_color_with_color(Some(context), Some(&cg_color(color)));
+    CGContext::fill_rect(Some(context), layer.bounds());
+    layer.image()
 }
 
 /// The capture inside its card: `fill` (the inset colour) around it, all clipped round.
@@ -132,6 +184,8 @@ fn rounded_card(capture: &CGImage, width: u32, height: u32, frame: &Layout, fill
     let bounds = card.bounds();
     // The layout keeps the radius within half of each side, as CoreGraphics requires.
     let radius = frame.radius.min(bounds.size.width / 2.0).min(bounds.size.height / 2.0).max(0.0);
+    // CGPathCreateWithRoundedRect, Béziers or arcs rasterise identically here; the corner
+    // antialiasing still differs from WebKit's by a fraction of a pixel along the curve.
     // SAFETY: a null transform means none; the rectangle and radii are finite and valid.
     let path = unsafe { CGPath::with_rounded_rect(bounds, radius, radius, std::ptr::null()) };
     CGContext::add_path(Some(context), Some(&path));
@@ -145,8 +199,8 @@ fn rounded_card(capture: &CGImage, width: u32, height: u32, frame: &Layout, fill
     card.image()
 }
 
-/// Right-aligned at `right` on the `baseline`, in the system UI font, white at 80 % with a
-/// one-point black shadow.
+/// Right-aligned at `right` on the `baseline`, in the system UI font, white with a one-point
+/// black shadow.
 fn paint_watermark(canvas: &Bitmap, text: &str, right: f64, baseline: f64, scale: f64) -> Result<(), String> {
     // SAFETY: a null language means the user's; the system UI type always has a font.
     let font = unsafe { CTFont::new_ui_font_for_language(CTFontUIFontType::System, WATERMARK_FONT_SIZE * scale, None) }
@@ -167,9 +221,12 @@ fn paint_watermark(canvas: &Bitmap, text: &str, right: f64, baseline: f64, scale
 
     let context = canvas.context();
     CGContext::save_g_state(Some(context));
-    CGContext::set_should_smooth_fonts(Some(context), false);
-    CGContext::set_alpha(Some(context), WATERMARK_ALPHA);
-    CGContext::set_shadow_with_color(Some(context), Bitmap::offset(scale, scale), scale, Some(&cg_color(Color::hex(0x000000))));
+    // WebKit dilates glyphs with font smoothing on canvas text too.
+    CGContext::set_allows_font_smoothing(Some(context), true);
+    CGContext::set_should_smooth_fonts(Some(context), true);
+    // The editor sets `globalAlpha = 0.8`, but WebKit paints text that has a shadow fully
+    // opaque (measured: glyph cores come out pure white), so no alpha is applied here.
+    CGContext::set_shadow_with_color(Some(context), Bitmap::offset(scale, scale), shadow_blur(scale), Some(&cg_color(Color::hex(0x000000))));
     CGContext::set_fill_color_with_color(Some(context), Some(&cg_color(WHITE)));
     CGContext::set_text_matrix(Some(context), CGAffineTransform { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: 0.0, ty: 0.0 });
     let origin = canvas.point(right - text_width, baseline);
@@ -180,12 +237,36 @@ fn paint_watermark(canvas: &Bitmap, text: &str, right: f64, baseline: f64, scale
     Ok(())
 }
 
-/// The composition resampled to exactly `width` x `height`, smoothed at high quality.
+/// The composition resampled to exactly `width` x `height`, bilinearly like the editor.
 fn resample(canvas: &Bitmap, width: u32, height: u32) -> Result<Bitmap, String> {
     let output = Bitmap::new(width, height)?;
-    let context = output.context();
-    CGContext::set_interpolation_quality(Some(context), CGInterpolationQuality::High);
-    let image = canvas.image()?;
-    CGContext::draw_image(Some(context), output.bounds(), Some(&image));
+    let destination = (0.0, 0.0, f64::from(width), f64::from(height));
+    let pixels = bilinear(&canvas.premultiplied(), canvas.width(), canvas.height(), width, height, destination);
+    let image = premultiplied_image(&pixels, width, height)?;
+    CGContext::draw_image(Some(output.context()), output.bounds(), Some(&image));
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bilinear;
+
+    #[test]
+    fn bilinear_copies_at_one_to_one_and_blends_between_centres() {
+        let source = [0, 0, 0, 255, 200, 100, 50, 255];
+        assert_eq!(bilinear(&source, 2, 1, 2, 1, (0.0, 0.0, 2.0, 1.0)), source);
+        // Doubled: the outer pixels clamp to the edges, the inner ones blend a quarter way.
+        let doubled = bilinear(&source, 2, 1, 4, 1, (0.0, 0.0, 4.0, 1.0));
+        assert_eq!(doubled.chunks(4).map(|pixel| pixel[0]).collect::<Vec<_>>(), [0, 50, 150, 200]);
+        assert!(doubled.chunks(4).all(|pixel| pixel[3] == 255));
+        // Halved: the single centre falls exactly between the two pixels.
+        assert_eq!(bilinear(&source, 2, 1, 1, 1, (0.0, 0.0, 1.0, 1.0)), [100, 50, 25, 255]);
+    }
+
+    #[test]
+    fn bilinear_honours_an_offset_destination() {
+        let source = [10, 20, 30, 255];
+        let covered = bilinear(&source, 1, 1, 3, 2, (-5.0, -1.0, 13.0, 4.0));
+        assert!(covered.chunks(4).all(|pixel| pixel == [10, 20, 30, 255]));
+    }
 }

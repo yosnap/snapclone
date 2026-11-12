@@ -5,7 +5,7 @@ use xcap::image::{Rgba, RgbaImage};
 
 use super::balance::{BalanceResult, analyze_balance};
 use super::style::{Background, Color, Ratio, StoredStyle};
-use super::wallpaper::{BlurredWallpaper, blur, saturate};
+use super::wallpaper::{BlurredWallpaper, reduce};
 use super::{ComposeError, compose};
 
 /// Every pixel distinct, so an offset by one would show.
@@ -73,11 +73,10 @@ fn no_background_leaves_transparent_corners() {
 #[test]
 fn wallpaper_background_covers_the_canvas() {
     let picture = RgbaImage::from_pixel(64, 36, Rgba([40, 120, 200, 255]));
-    let blurred = blur(&super::canvas::straight_image(&picture).unwrap()).unwrap();
-    assert_eq!((blurred.width(), blurred.height()), (480, 270));
-    let mut expected = vec![40, 120, 200, 255];
-    saturate(&mut expected, 1.4);
-    let centre = &blurred.pixels()[((135 * 480 + 240) * 4)..((135 * 480 + 240) * 4 + 4)];
+    let blurred = reduce(&super::canvas::straight_image(&picture).unwrap()).unwrap();
+    assert_eq!((blurred.width(), blurred.height()), (24, 14));
+    let expected = [40, 120, 200, 255];
+    let centre = &blurred.pixels()[((7 * 24 + 12) * 4)..((7 * 24 + 12) * 4 + 4)];
     assert!(centre.iter().zip(&expected).all(|(a, e)| a.abs_diff(*e) <= 1), "{centre:?} vs {expected:?}");
 
     let source = capture(40, 30);
