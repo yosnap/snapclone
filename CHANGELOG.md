@@ -2,6 +2,12 @@
 
 Todos los cambios relevantes de Snapclone. El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y las versiones siguen [SemVer](https://semver.org/lang/es/). Mientras la versión sea 0.x, cualquier versión menor puede cambiar el comportamiento.
 
+## [0.1.3] - 2026-11-12
+
+### Corregido
+
+- Con el tachado automático activado, «Capturar zona y copiar» podía tardar unos 30 s en copiar y avisar de que tardaba demasiado. macOS prepara el reconocimiento de texto la primera vez que se usa tras instalar o actualizar la app; ahora se prepara en segundo plano al abrirla.
+
 ## [0.1.2] - 2026-11-12
 
 ### Mejorado
@@ -51,6 +57,7 @@ Primera versión pública, solo para macOS.
 - Vive en la barra de menús. ⌘Q la oculta y «Salir del todo» la cierra.
 - Ventana de Preferencias con opción para ocultar el Dock.
 
+[0.1.3]: https://github.com/yosnap/snapclone/releases/tag/v0.1.3
 [0.1.2]: https://github.com/yosnap/snapclone/releases/tag/v0.1.2
 [0.1.1]: https://github.com/yosnap/snapclone/releases/tag/v0.1.1
 [0.1.0]: https://github.com/yosnap/snapclone/releases/tag/v0.1.0
