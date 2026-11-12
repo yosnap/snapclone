@@ -2,6 +2,17 @@
 
 Todos los cambios relevantes de Snapclone. El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y las versiones siguen [SemVer](https://semver.org/lang/es/). Mientras la versión sea 0.x, cualquier versión menor puede cambiar el comportamiento.
 
+## [0.1.2] - 2026-11-12
+
+### Mejorado
+
+- «Capturar zona y copiar» es casi instantáneo: la imagen con el estilo llega al portapapeles en unos 40 ms (antes, entre 0,1 y 0,6 s). Se compone directamente en la app, sin pasar por el editor, y queda idéntica a la que exporta el editor. Con el tachado automático activado se sigue usando el editor.
+
+### Corregido
+
+- Si la captura ya se había copiado y fallaba el guardado en el historial, se mostraba como captura fallida.
+- Los cambios de estilo o de tachado hechos justo antes de copiar podían no tenerse en cuenta durante unos instantes.
+
 ## [0.1.1] - 2026-10-31
 
 ### Corregido
@@ -40,5 +51,6 @@ Primera versión pública, solo para macOS.
 - Vive en la barra de menús. ⌘Q la oculta y «Salir del todo» la cierra.
 - Ventana de Preferencias con opción para ocultar el Dock.
 
+[0.1.2]: https://github.com/yosnap/snapclone/releases/tag/v0.1.2
 [0.1.1]: https://github.com/yosnap/snapclone/releases/tag/v0.1.1
 [0.1.0]: https://github.com/yosnap/snapclone/releases/tag/v0.1.0
