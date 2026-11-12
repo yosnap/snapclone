@@ -388,7 +388,7 @@ async fn capture_picked_window(app: &AppHandle, session: Session, index: usize, 
             (xcap::image::imageops::crop_imm(shot.image.as_ref(), x, y, width, height).to_image(), scale)
         }
     };
-    capture::store_image(app, image, scale).await
+    native_copy::copy_or_store(app, image, scale).await
 }
 
 fn capture_window(id: u32) -> Result<RgbaImage, String> {

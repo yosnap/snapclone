@@ -73,7 +73,7 @@ fn no_background_leaves_transparent_corners() {
 #[test]
 fn wallpaper_background_covers_the_canvas() {
     let picture = RgbaImage::from_pixel(64, 36, Rgba([40, 120, 200, 255]));
-    let blurred = reduce(&super::canvas::straight_image(&picture).unwrap()).unwrap();
+    let blurred = reduce(&super::canvas::straight_image(&picture).unwrap(), (64, 36)).unwrap();
     assert_eq!((blurred.width(), blurred.height()), (24, 14));
     let expected = [40, 120, 200, 255];
     let centre = &blurred.pixels()[((7 * 24 + 12) * 4)..((7 * 24 + 12) * 4 + 4)];

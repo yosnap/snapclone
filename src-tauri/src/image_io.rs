@@ -122,10 +122,12 @@ fn oriented_image(source: &Owned, max_side: u32) -> Option<Owned> {
     }
 }
 
-/// The first image decoded at full size with any EXIF rotation applied, as WebKit draws it.
-pub fn decode(bytes: &[u8]) -> Option<objc2_core_foundation::CFRetained<objc2_core_graphics::CGImage>> {
+/// The first image with any EXIF rotation applied, decoded at most `max_side` pixels on its
+/// longer side (never enlarged). ImageIO reduces while decoding, which is much cheaper than
+/// decoding a large picture at full size.
+pub fn decode(bytes: &[u8], max_side: u32) -> Option<objc2_core_foundation::CFRetained<objc2_core_graphics::CGImage>> {
     let (width, height) = header_size(bytes)?;
-    let image = oriented_image(&source(bytes)?, width.max(height))?;
+    let image = oriented_image(&source(bytes)?, max_side.min(width.max(height)))?;
     let pointer = std::ptr::NonNull::new(image.0.cast_mut().cast::<objc2_core_graphics::CGImage>())?;
     std::mem::forget(image);
     // SAFETY: the reference came from a Create function and its ownership moves to the
@@ -189,8 +191,11 @@ mod tests {
 
     #[test]
     fn decodes_at_full_size() {
-        let image = decode(&sample_png(37, 21)).unwrap();
-        assert_eq!((objc2_core_graphics::CGImage::width(Some(&image)), objc2_core_graphics::CGImage::height(Some(&image))), (37, 21));
-        assert!(decode(b"garbage").is_none());
+        let size = |image: &objc2_core_graphics::CGImage| {
+            (objc2_core_graphics::CGImage::width(Some(image)), objc2_core_graphics::CGImage::height(Some(image)))
+        };
+        assert_eq!(size(&decode(&sample_png(37, 21), 1000).unwrap()), (37, 21), "never enlarged");
+        assert_eq!(size(&decode(&sample_png(400, 100), 80).unwrap()), (80, 20));
+        assert!(decode(b"garbage", 80).is_none());
     }
 }

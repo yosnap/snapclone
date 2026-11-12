@@ -13,7 +13,7 @@ use xcap::image::RgbaImage;
 
 use crate::{
     app_settings::{self, Toggle},
-    editor_window, history, hud, images, screen, selector, wallpaper,
+    editor_window, export, history, hud, images, screen, selector, wallpaper,
 };
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
@@ -43,6 +43,9 @@ pub struct Captures {
     copying: AtomicBool,
     /// The capture the hidden editor is copying, until it reports back or runs out of time.
     pending_copy: Mutex<Option<String>>,
+    /// Rust copied the capture and "Cerrar la captura después de copiarla" closed the editor,
+    /// so the end of the capture must not bring it back.
+    closed_after_copy: AtomicBool,
 }
 
 /// Which of Snapclone's windows were on screen when a capture hid them.
@@ -59,9 +62,6 @@ struct CaptureReady {
     scale: f64,
     /// Style and copy it without showing the editor, then call `copy_finished`.
     copy: bool,
-    /// Already styled and copied by Rust: load it for the history without showing or
-    /// copying it again.
-    copied: bool,
 }
 
 /// What a capture takes; the selector and the fallback tool work per kind.
@@ -326,13 +326,14 @@ fn capture_ended(app: &AppHandle) {
     let captures = app.state::<Captures>();
     let hidden = captures.hidden.lock().unwrap().take();
     let copying = captures.copying.swap(false, Ordering::SeqCst);
+    let closed_after_copy = captures.closed_after_copy.swap(false, Ordering::SeqCst);
     captures.in_progress.store(false, Ordering::SeqCst);
     let Some(hidden) = hidden else { return };
     if hidden.settings {
         app_settings::show_window(app);
     }
     if copying {
-        if hidden.editor {
+        if hidden.editor && !closed_after_copy {
             editor_window::show_without_focus(app);
         }
     } else if hidden.editor || editor_window::is_visible(app) {
@@ -352,7 +353,7 @@ pub fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
     } else {
         editor_window::show(app, false);
     }
-    if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale, copy, copied: false }) {
+    if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale, copy }) {
         eprintln!("capture-ready emit failed: {error}");
         if copy {
             finish_copy(app, &format!("No se pudo copiar la captura: {error}"));
@@ -371,6 +372,14 @@ fn register(app: &AppHandle, id: &str, path: PathBuf, scale: f64) {
         }
     });
     app.state::<Captures>().files.lock().unwrap().insert(id.to_string(), path);
+}
+
+/// Applies "Cerrar la captura después de copiarla" after Rust copied the capture itself, like
+/// `copy_png` does for the editor's copy, and keeps the editor closed when the capture ends.
+pub fn copied_natively(app: &AppHandle) {
+    if export::close_after_copy(app) {
+        app.state::<Captures>().closed_after_copy.store(true, Ordering::SeqCst);
+    }
 }
 
 /// Whether the capture in progress is copied rather than opened in the editor.
@@ -448,7 +457,7 @@ pub async fn store_copied(app: &AppHandle, image: RgbaImage, scale: f64) -> Resu
     let (id, path) = write_capture(app, image).await?;
     register(app, &id, path, scale);
     // The copy and the history entry already exist; only the editor's copy is missing.
-    if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale, copy: false, copied: true }) {
+    if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale, copy: false }) {
         eprintln!("capture-ready emit failed: {error}");
     }
     Ok(())

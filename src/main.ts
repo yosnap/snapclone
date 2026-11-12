@@ -38,11 +38,11 @@ import { requestWallpaper, wallpaperError } from "./wallpaper";
 import { Zoom } from "./zoom";
 
 /**
- * `copy`: style and copy it without showing the editor ("Capturar zona y copiar").
- * `copied`: Rust already styled and copied it; it is only loaded, for whoever opens the
- * editor next, while the editor stays hidden.
+ * `copy`: style and copy it without showing the editor ("Capturar zona y copiar"). A
+ * capture Rust already styled and copied arrives without it and simply loads; Rust does
+ * not show the editor for it.
  */
-type CaptureReady = { id: string; scale: number; copy?: boolean; copied?: boolean };
+type CaptureReady = { id: string; scale: number; copy?: boolean };
 
 fillIcons();
 const canvas = document.querySelector<HTMLCanvasElement>("#editor-canvas")!;
@@ -735,7 +735,6 @@ if (!outsideTauri) {
       void copyCapture(payload.id, hooks);
       return;
     }
-    // A capture copied by Rust loads like any other; Rust keeps the editor hidden for it.
     loadCapture(payload).catch((error) => showStatus(`No se pudo cargar la captura: ${error}`, true));
   });
   listenNotices(showStatus);

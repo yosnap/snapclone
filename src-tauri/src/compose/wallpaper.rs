@@ -10,6 +10,10 @@ use std::sync::Arc;
 
 /// Longer side of the reduced copy, the editor's `BLURRED_SIDE` without canvas filters.
 const BLURRED_SIDE: f64 = 24.0;
+/// Longer side the picture is decoded at before it is reduced to the tiny copy.
+/// 768 px keeps the result within a level of decoding at full size (measured against the
+/// editor); smaller sides drift visibly in the tiny copy.
+const DECODE_SIDE: u32 = 768;
 
 /// Premultiplied RGBA pixels, rows packed, ready to be drawn scaled to cover the canvas.
 #[derive(Debug, PartialEq)]
@@ -45,13 +49,30 @@ pub fn blurred_size(width: u32, height: u32) -> (u32, u32) {
     (side(width), side(height))
 }
 
-/// Reduces a decoded picture through CoreGraphics at high quality, as the editor's
-/// `drawImage` does.
+/// Reduces the picture in an image file (any format ImageIO reads, HEIC included). ImageIO
+/// first decodes it at most `decode_side` pixels wide, which keeps the first copy after a
+/// wallpaper change fast; the 24 px copy is then sized from the picture's real dimensions,
+/// so it rounds exactly like the editor's.
 #[cfg(target_os = "macos")]
-pub fn reduce(image: &objc2_core_graphics::CGImage) -> Result<BlurredWallpaper, String> {
-    use objc2_core_graphics::{CGContext, CGImage, CGInterpolationQuality};
+pub fn from_picture(bytes: &[u8], decode_side: u32) -> Result<BlurredWallpaper, String> {
+    use objc2_core_graphics::CGImage;
 
-    let (width, height) = blurred_size(CGImage::width(Some(image)) as u32, CGImage::height(Some(image)) as u32);
+    const UNREADABLE: &str = "el fondo de escritorio no se puede leer";
+    let (width, height) = crate::image_io::header_size(bytes).ok_or(UNREADABLE)?;
+    let decoded = crate::image_io::decode(bytes, decode_side).ok_or(UNREADABLE)?;
+    // The header gives the stored size; an EXIF rotation of a quarter turn swaps it.
+    let landscape = CGImage::width(Some(&decoded)) >= CGImage::height(Some(&decoded));
+    let size = if landscape == (width >= height) { (width, height) } else { (height, width) };
+    reduce(&decoded, size)
+}
+
+/// Reduces a decoded picture whose full, oriented size is `size` through CoreGraphics at
+/// high quality, as the editor's `drawImage` does.
+#[cfg(target_os = "macos")]
+pub fn reduce(image: &objc2_core_graphics::CGImage, size: (u32, u32)) -> Result<BlurredWallpaper, String> {
+    use objc2_core_graphics::{CGContext, CGInterpolationQuality};
+
+    let (width, height) = blurred_size(size.0, size.1);
     let reduced = super::canvas::Bitmap::new(width, height)?;
     let context = reduced.context();
     CGContext::set_interpolation_quality(Some(context), CGInterpolationQuality::High);
@@ -77,8 +98,7 @@ pub fn current(app: &tauri::AppHandle) -> Result<Arc<BlurredWallpaper>, String> 
     {
         return Ok(blurred.clone());
     }
-    let decoded = crate::image_io::decode(source.bytes()).ok_or("el fondo de escritorio no se puede leer")?;
-    let blurred = Arc::new(reduce(&decoded)?);
+    let blurred = Arc::new(from_picture(source.bytes(), DECODE_SIDE)?);
     *cache = Some((source.version().to_string(), blurred.clone()));
     Ok(blurred)
 }

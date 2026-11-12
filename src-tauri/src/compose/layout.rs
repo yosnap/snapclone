@@ -10,6 +10,12 @@ const WATERMARK_GAP: f64 = 10.0;
 /// The watermark baseline never comes closer than this to the canvas bottom, in points.
 const WATERMARK_MARGIN: f64 = 4.0;
 
+/// Largest canvas composed natively, in pixels, about WebKit's own canvas area limit; larger
+/// ones (extreme ratios on big captures) go to the editor, which reports them as it always did.
+pub const MAX_CANVAS_AREA: u64 = 16_384 * 16_384;
+/// Longest canvas side composed natively; CoreGraphics bitmaps stay well within it.
+pub const MAX_CANVAS_SIDE: u32 = 32_767;
+
 /// Where the capture sits inside the composed canvas. `x`/`y` are the capture's origin; the
 /// card is the rounded, shadowed frame around it, `inset` wider on every side.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,6 +45,11 @@ impl Layout {
             inset,
             radius: (style.radius * scale).min(card_width / 2.0).min(card_height / 2.0),
         }
+    }
+
+    /// Whether the canvas is small enough to compose natively.
+    pub fn fits(&self) -> bool {
+        self.width <= MAX_CANVAS_SIDE && self.height <= MAX_CANVAS_SIDE && u64::from(self.width) * u64::from(self.height) <= MAX_CANVAS_AREA
     }
 
     /// The card's top-left corner and size.
@@ -117,6 +128,17 @@ mod tests {
         let frame = Layout::new(30, 10, 1.5, &style(0.0, 3.0, 50.0, Ratio::Auto));
         assert_eq!(frame.inset, 5, "Math.round(4.5)");
         assert_eq!(frame.radius, 10.0, "at most half the card height");
+    }
+
+    #[test]
+    fn huge_canvases_do_not_fit() {
+        let wide = Layout::new(2800, 1400, 1.0, &style(0.0, 0.0, 0.0, Ratio::parse("100:1").unwrap()));
+        assert_eq!((wide.width, wide.height), (140_000, 1400));
+        assert!(!wide.fits(), "a side over the limit");
+        let square = Layout::new(16_385, 16_385, 1.0, &style(0.0, 0.0, 0.0, Ratio::Auto));
+        assert!(!square.fits(), "an area over the limit");
+        assert!(Layout::new(16_384, 16_384, 1.0, &style(0.0, 0.0, 0.0, Ratio::Auto)).fits());
+        assert!(Layout::new(800, 600, 2.0, &style(44.0, 104.0, 13.0, Ratio::Auto)).fits());
     }
 
     #[test]

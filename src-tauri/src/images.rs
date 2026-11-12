@@ -13,11 +13,42 @@ pub fn write_png(path: &Path, image: &RgbaImage) -> Result<(), String> {
     encode_fast(std::io::BufWriter::new(file), image)
 }
 
-/// The PNG bytes of `image`, with the same fast compression, for the clipboard.
+/// The PNG bytes of `image`, with the same fast compression, for the clipboard. Tagged
+/// sRGB (perceptual intent) like the PNG WebKit's `toBlob` produces, so apps that manage
+/// colour read it exactly as they read the editor's copy.
 pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     encode_fast(&mut bytes, image)?;
-    Ok(bytes)
+    Ok(with_srgb_chunk(bytes))
+}
+
+/// Length of the signature plus the IHDR chunk, which every PNG starts with.
+const IHDR_END: usize = 8 + 4 + 4 + 13 + 4;
+
+/// Inserts an `sRGB` chunk (rendering intent 0, perceptual) right after IHDR, where the
+/// specification wants colour chunks.
+fn with_srgb_chunk(png: Vec<u8>) -> Vec<u8> {
+    let mut chunk = Vec::with_capacity(13);
+    chunk.extend_from_slice(&1u32.to_be_bytes());
+    chunk.extend_from_slice(b"sRGB\0");
+    chunk.extend_from_slice(&crc32(&chunk[4..]).to_be_bytes());
+    let mut output = Vec::with_capacity(png.len() + chunk.len());
+    output.extend_from_slice(&png[..IHDR_END]);
+    output.extend_from_slice(&chunk);
+    output.extend_from_slice(&png[IHDR_END..]);
+    output
+}
+
+/// The CRC-32 PNG chunks carry (ISO 3309, reflected, polynomial 0xEDB88320).
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
 }
 
 fn encode_fast(writer: impl std::io::Write, image: &RgbaImage) -> Result<(), String> {
@@ -59,6 +90,16 @@ mod tests {
         let bytes = encode_png(&original).unwrap();
         assert!(bytes.starts_with(b"\x89PNG"));
         assert_eq!(image::load_from_memory(&bytes).unwrap().into_rgba8(), original);
+    }
+
+    #[test]
+    fn clipboard_png_is_tagged_srgb_after_ihdr() {
+        let bytes = encode_png(&RgbaImage::new(2, 2)).unwrap();
+        assert_eq!(&bytes[12..16], b"IHDR");
+        // Length 1, type, perceptual intent, then the CRC every decoder checks.
+        assert_eq!(&bytes[IHDR_END..IHDR_END + 9], b"\0\0\0\x01sRGB\0");
+        assert_eq!(&bytes[IHDR_END + 9..IHDR_END + 13], &crc32(b"sRGB\0").to_be_bytes());
+        assert_eq!(crc32(b"IEND"), 0xAE42_6082, "the well-known CRC of an IEND chunk");
     }
 
     #[test]

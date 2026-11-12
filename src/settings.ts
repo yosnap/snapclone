@@ -36,7 +36,6 @@ export type Settings = {
 type Key = keyof Settings;
 
 let store: Store | null = null;
-const pending = new Map<Key, unknown>();
 let saveTimer: number | undefined;
 
 export function defaultSettings(): Settings {
@@ -91,22 +90,22 @@ export async function loadSettings(): Promise<Settings> {
   return settings;
 }
 
-/** Queues a value and writes the file shortly after the last change. */
+/**
+ * Sets a value at once and writes the file shortly after the last change. Rust reads this
+ * same store instance from memory (instances are shared by path), so "Capturar zona y
+ * copiar" always sees the current style and redaction choice; only the disk write waits.
+ */
 export function saveSetting<K extends Key>(key: K, value: Settings[K]): void {
-  if (!store) return;
-  pending.set(key, value);
-  window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(flush, SAVE_DELAY_MS);
-}
-
-async function flush(): Promise<void> {
   const target = store;
   if (!target) return;
-  const entries = [...pending];
-  pending.clear();
+  target.set(key, value).catch((error) => console.error(`setting ${key} could not be set`, error));
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(save, SAVE_DELAY_MS);
+}
+
+async function save(): Promise<void> {
   try {
-    for (const [key, value] of entries) await target.set(key, value);
-    await target.save();
+    await store?.save();
   } catch (error) {
     console.error("settings could not be saved", error);
   }

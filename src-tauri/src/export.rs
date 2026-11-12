@@ -20,10 +20,18 @@ pub struct PendingSave(Mutex<Option<PathBuf>>);
 #[tauri::command]
 pub fn copy_png(app: tauri::AppHandle, request: Request<'_>) -> Result<(), String> {
     write_png_to_pasteboard(raw_body(&request)?)?;
-    if app_settings::toggle(&app, Toggle::CloseAfterCopy) {
-        editor_window::hide(&app);
-    }
+    close_after_copy(&app);
     Ok(())
+}
+
+/// Hides the editor when "Cerrar la captura después de copiarla" is on; returns whether it
+/// did. Shared by the editor's copy and the one Rust makes for "Capturar zona y copiar".
+pub fn close_after_copy(app: &tauri::AppHandle) -> bool {
+    let close = app_settings::toggle(app, Toggle::CloseAfterCopy);
+    if close {
+        editor_window::hide(app);
+    }
+    close
 }
 
 /// Shows the native save dialog, starting in the save folder with the default name, and

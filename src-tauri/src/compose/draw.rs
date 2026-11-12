@@ -26,6 +26,9 @@ const GLOW_END: Color = Color { red: 255, green: 255, blue: 255, alpha: 0 };
 pub fn compose(capture: &RgbaImage, scale: f64, style: &StoredStyle, wallpaper: Option<&BlurredWallpaper>) -> Result<RgbaImage, String> {
     let (width, height) = capture.dimensions();
     let frame = Layout::new(width, height, scale, style);
+    if !frame.fits() {
+        return Err(format!("the canvas would be {}x{} pixels, too large to compose natively", frame.width, frame.height));
+    }
     let canvas = Bitmap::new(frame.width, frame.height)?;
     paint_background(&canvas, style.background, wallpaper)?;
 
