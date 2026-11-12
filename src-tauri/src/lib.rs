@@ -2,6 +2,9 @@ mod app_settings;
 mod capture;
 #[cfg(target_os = "macos")]
 mod capture_below;
+// Only the debug command calls it until the copy flow does.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+mod compose;
 mod crosshair;
 mod editor_window;
 mod export;
@@ -41,6 +44,7 @@ pub fn run() {
         .manage(scroll::ScrollCapture::default())
         .manage(ocr::OcrCache::default())
         .manage(wallpaper::WallpaperCache::default())
+        .manage(compose::BlurredWallpaperCache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -124,7 +128,9 @@ pub fn run() {
             app_settings::set_app_toggle,
             app_settings::open_settings,
             app_settings::show_history,
-            app_settings::open_history_folder
+            app_settings::open_history_folder,
+            #[cfg(debug_assertions)]
+            compose::compose_debug
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));

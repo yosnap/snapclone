@@ -182,6 +182,12 @@ pub fn path_of(app: &AppHandle, id: &str) -> Option<PathBuf> {
     }
 }
 
+/// Display scale a stored capture was taken at, if the id is in the history.
+#[cfg(debug_assertions)]
+pub fn scale_of(app: &AppHandle, id: &str) -> Option<f64> {
+    get(&app.state::<History>().connection(), id).ok().flatten().map(|entry| entry.scale)
+}
+
 /// Stores a fresh capture. Failing only costs its history entry, so it is logged, not fatal.
 pub fn record(app: &AppHandle, id: &str, path: &Path, scale: f64) {
     let created_at = SystemTime::now()

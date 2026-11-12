@@ -97,16 +97,13 @@ pub fn header_size(bytes: &[u8]) -> Option<(u32, u32)> {
     }
 }
 
-/// A PNG at most `max_side` pixels on its longer side, with any EXIF rotation applied.
-pub fn thumbnail_png(bytes: &[u8], max_side: u32) -> Result<Vec<u8>, String> {
-    const FAILED: &str = "no se pudo reducir el fondo de escritorio";
-    let source = source(bytes).ok_or(FAILED)?;
-    let png_type: Retained<NSString> = NSString::from_str("public.png");
+/// The first image at most `max_side` pixels on its longer side, with any EXIF rotation
+/// applied, as a `CGImageRef`.
+fn oriented_image(source: &Owned, max_side: u32) -> Option<Owned> {
     let side = i64::from(max_side);
-    // SAFETY: every object created here is checked for null and released by `Owned`; the
-    // NSString is toll-free bridged to the CFString ImageIO expects and outlives the calls.
+    // SAFETY: every object created here is checked for null and released by `Owned`.
     unsafe {
-        let size = Owned::new(CFNumberCreate(std::ptr::null(), NUMBER_SINT64, (&raw const side).cast())).ok_or(FAILED)?;
+        let size = Owned::new(CFNumberCreate(std::ptr::null(), NUMBER_SINT64, (&raw const side).cast()))?;
         let keys = [
             kCGImageSourceCreateThumbnailFromImageAlways,
             kCGImageSourceCreateThumbnailWithTransform,
@@ -120,9 +117,31 @@ pub fn thumbnail_png(bytes: &[u8], max_side: u32) -> Result<Vec<u8>, String> {
             3,
             &raw const kCFTypeDictionaryKeyCallBacks,
             &raw const kCFTypeDictionaryValueCallBacks,
-        ))
-        .ok_or(FAILED)?;
-        let image = Owned::new(CGImageSourceCreateThumbnailAtIndex(source.0, 0, options.0)).ok_or(FAILED)?;
+        ))?;
+        Owned::new(CGImageSourceCreateThumbnailAtIndex(source.0, 0, options.0))
+    }
+}
+
+/// The first image decoded at full size with any EXIF rotation applied, as WebKit draws it.
+pub fn decode(bytes: &[u8]) -> Option<objc2_core_foundation::CFRetained<objc2_core_graphics::CGImage>> {
+    let (width, height) = header_size(bytes)?;
+    let image = oriented_image(&source(bytes)?, width.max(height))?;
+    let pointer = std::ptr::NonNull::new(image.0.cast_mut().cast::<objc2_core_graphics::CGImage>())?;
+    std::mem::forget(image);
+    // SAFETY: the reference came from a Create function and its ownership moves to the
+    // returned value, which releases it once; `Owned` was forgotten so it does not.
+    Some(unsafe { objc2_core_foundation::CFRetained::from_raw(pointer) })
+}
+
+/// A PNG at most `max_side` pixels on its longer side, with any EXIF rotation applied.
+pub fn thumbnail_png(bytes: &[u8], max_side: u32) -> Result<Vec<u8>, String> {
+    const FAILED: &str = "no se pudo reducir el fondo de escritorio";
+    let source = source(bytes).ok_or(FAILED)?;
+    let png_type: Retained<NSString> = NSString::from_str("public.png");
+    let image = oriented_image(&source, max_side).ok_or(FAILED)?;
+    // SAFETY: every object created here is checked for null and released by `Owned`; the
+    // NSString is toll-free bridged to the CFString ImageIO expects and outlives the calls.
+    unsafe {
         let output = Owned::new(CFDataCreateMutable(std::ptr::null(), 0)).ok_or(FAILED)?;
         let destination = Owned::new(CGImageDestinationCreateWithData(
             output.0,
@@ -166,5 +185,12 @@ mod tests {
         let image = xcap::image::load_from_memory(&thumbnail).unwrap();
         assert_eq!((image.width(), image.height()), (80, 20));
         assert!(thumbnail_png(b"garbage", 80).is_err());
+    }
+
+    #[test]
+    fn decodes_at_full_size() {
+        let image = decode(&sample_png(37, 21)).unwrap();
+        assert_eq!((objc2_core_graphics::CGImage::width(Some(&image)), objc2_core_graphics::CGImage::height(Some(&image))), (37, 21));
+        assert!(decode(b"garbage").is_none());
     }
 }
