@@ -142,6 +142,7 @@ pub fn run() {
             if let Err(error) = tray::extend_app_menu(app.handle()) {
                 eprintln!("the app menu could not be extended: {error}");
             }
+            native_copy::warm_up(app.handle());
             editor_window::show(app.handle(), true);
             Ok(())
         })

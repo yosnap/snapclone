@@ -103,6 +103,23 @@ async fn write_clipboard(app: &AppHandle, png: Vec<u8>) -> Result<(), String> {
     }
 }
 
+/// Reads and reduces the desktop picture in the background when the style uses it, so the
+/// first copy after launch does not pay for starting the image decoder (over 100 ms for
+/// HEIC). Failures are left for the copy itself to report.
+pub fn warm_up(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if compose::stored_settings(&app).0.background == compose::Background::Wallpaper {
+                let _ = compose::current_wallpaper(&app);
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
 /// The capture styled with the editor's stored settings, as PNG. A wallpaper background
 /// that cannot be read fails, so the editor's copy reports why instead of using a stand-in.
 fn styled_png(app: &AppHandle, image: &RgbaImage, scale: f64) -> Result<Vec<u8>, String> {
