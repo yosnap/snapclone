@@ -2,8 +2,6 @@ mod app_settings;
 mod capture;
 #[cfg(target_os = "macos")]
 mod capture_below;
-// Only the debug command calls it until the copy flow does.
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 mod compose;
 mod crosshair;
 mod editor_window;
@@ -12,6 +10,7 @@ mod geometry;
 mod history;
 mod hud;
 mod images;
+mod native_copy;
 mod ocr;
 mod output;
 mod import;

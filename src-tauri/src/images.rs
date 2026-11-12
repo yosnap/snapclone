@@ -10,7 +10,18 @@ const THUMBNAIL_WIDTH: u32 = 320;
 /// Fast compression: captures are re-encoded on export anyway, so speed matters more here.
 pub fn write_png(path: &Path, image: &RgbaImage) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
-    png::PngEncoder::new_with_quality(std::io::BufWriter::new(file), png::CompressionType::Fast, png::FilterType::Adaptive)
+    encode_fast(std::io::BufWriter::new(file), image)
+}
+
+/// The PNG bytes of `image`, with the same fast compression, for the clipboard.
+pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    encode_fast(&mut bytes, image)?;
+    Ok(bytes)
+}
+
+fn encode_fast(writer: impl std::io::Write, image: &RgbaImage) -> Result<(), String> {
+    png::PngEncoder::new_with_quality(writer, png::CompressionType::Fast, png::FilterType::Adaptive)
         .write_image(image.as_raw(), image.width(), image.height(), image::ExtendedColorType::Rgba8)
         .map_err(|error| error.to_string())
 }
@@ -41,6 +52,14 @@ pub fn write_thumbnail(capture: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoded_png_decodes_to_the_same_pixels() {
+        let original = RgbaImage::from_fn(13, 7, |x, y| image::Rgba([(x * 19) as u8, (y * 31) as u8, 200, (x * y) as u8]));
+        let bytes = encode_png(&original).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG"));
+        assert_eq!(image::load_from_memory(&bytes).unwrap().into_rgba8(), original);
+    }
 
     #[test]
     fn thumbnail_keeps_aspect_ratio() {

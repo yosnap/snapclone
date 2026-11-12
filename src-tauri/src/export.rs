@@ -60,8 +60,9 @@ pub async fn save_image(app: tauri::AppHandle, pending: State<'_, PendingSave>, 
     Ok(())
 }
 
+/// Replaces the pasteboard contents with a PNG. Call it on the main thread.
 #[cfg(target_os = "macos")]
-fn write_png_to_pasteboard(bytes: &[u8]) -> Result<(), String> {
+pub fn write_png_to_pasteboard(bytes: &[u8]) -> Result<(), String> {
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
     use objc2_foundation::NSData;
 
@@ -100,6 +101,6 @@ pub fn write_text_to_pasteboard(_text: &str) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn write_png_to_pasteboard(_bytes: &[u8]) -> Result<(), String> {
+pub fn write_png_to_pasteboard(_bytes: &[u8]) -> Result<(), String> {
     Err("copying images is only implemented on macOS".into())
 }

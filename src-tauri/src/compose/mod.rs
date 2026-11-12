@@ -20,11 +20,8 @@ use serde_json::Value;
 use tauri::AppHandle;
 use xcap::image::RgbaImage;
 
-// Like the module itself, only the debug command uses these until the copy flow does.
-#[cfg_attr(not(debug_assertions), allow(unused_imports))]
 pub use style::{Background, StoredStyle};
 #[cfg(target_os = "macos")]
-#[cfg_attr(not(debug_assertions), allow(unused_imports))]
 pub use wallpaper::current as current_wallpaper;
 pub use wallpaper::{BlurredWallpaper, BlurredWallpaperCache};
 
