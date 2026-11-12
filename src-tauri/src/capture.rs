@@ -13,7 +13,7 @@ use xcap::image::RgbaImage;
 
 use crate::{
     app_settings::{self, Toggle},
-    editor_window, history, hud, images, screen, selector, wallpaper,
+    editor_window, export, history, hud, images, screen, selector, wallpaper,
 };
 
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
@@ -43,6 +43,9 @@ pub struct Captures {
     copying: AtomicBool,
     /// The capture the hidden editor is copying, until it reports back or runs out of time.
     pending_copy: Mutex<Option<String>>,
+    /// Rust copied the capture and "Cerrar la captura después de copiarla" closed the editor,
+    /// so the end of the capture must not bring it back.
+    closed_after_copy: AtomicBool,
 }
 
 /// Which of Snapclone's windows were on screen when a capture hid them.
@@ -323,13 +326,14 @@ fn capture_ended(app: &AppHandle) {
     let captures = app.state::<Captures>();
     let hidden = captures.hidden.lock().unwrap().take();
     let copying = captures.copying.swap(false, Ordering::SeqCst);
+    let closed_after_copy = captures.closed_after_copy.swap(false, Ordering::SeqCst);
     captures.in_progress.store(false, Ordering::SeqCst);
     let Some(hidden) = hidden else { return };
     if hidden.settings {
         app_settings::show_window(app);
     }
     if copying {
-        if hidden.editor {
+        if hidden.editor && !closed_after_copy {
             editor_window::show_without_focus(app);
         }
     } else if hidden.editor || editor_window::is_visible(app) {
@@ -340,16 +344,8 @@ fn capture_ended(app: &AppHandle) {
 /// Registers a finished capture, stores it in the history and hands it to the editor, which
 /// opens it, or styles and copies it while staying hidden for "Capturar zona y copiar".
 pub fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
-    history::record(app, &id, &path, scale);
-    // The history view only needs it later, so it never delays showing the capture.
-    let source = path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = images::write_thumbnail(&source) {
-            eprintln!("thumbnail could not be written: {error}");
-        }
-    });
+    register(app, &id, path, scale);
     let captures = app.state::<Captures>();
-    captures.files.lock().unwrap().insert(id.clone(), path);
     let copy = captures.copying.load(Ordering::SeqCst);
     if copy {
         *captures.pending_copy.lock().unwrap() = Some(id.clone());
@@ -363,6 +359,32 @@ pub fn deliver(app: &AppHandle, id: String, path: PathBuf, scale: f64) {
             finish_copy(app, &format!("No se pudo copiar la captura: {error}"));
         }
     }
+}
+
+/// Stores the history entry, the thumbnail and the `capture://` lookup of a new capture.
+fn register(app: &AppHandle, id: &str, path: PathBuf, scale: f64) {
+    history::record(app, id, &path, scale);
+    // The history view only needs it later, so it never delays showing the capture.
+    let source = path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = images::write_thumbnail(&source) {
+            eprintln!("thumbnail could not be written: {error}");
+        }
+    });
+    app.state::<Captures>().files.lock().unwrap().insert(id.to_string(), path);
+}
+
+/// Applies "Cerrar la captura después de copiarla" after Rust copied the capture itself, like
+/// `copy_png` does for the editor's copy, and keeps the editor closed when the capture ends.
+pub fn copied_natively(app: &AppHandle) {
+    if export::close_after_copy(app) {
+        app.state::<Captures>().closed_after_copy.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Whether the capture in progress is copied rather than opened in the editor.
+pub fn is_copying(app: &AppHandle) -> bool {
+    app.state::<Captures>().copying.load(Ordering::SeqCst)
 }
 
 /// A hidden editor that never answers (its page failed or was suspended) would leave the
@@ -423,6 +445,26 @@ pub fn capture_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// Encodes off the async runtime and hands the file to the normal capture flow.
 pub async fn store_image(app: &AppHandle, image: RgbaImage, scale: f64) -> Result<(), String> {
+    let (id, path) = write_capture(app, image).await?;
+    app_settings::play_capture_sound(app);
+    deliver(app, id, path, scale);
+    Ok(())
+}
+
+/// Stores a capture Rust already styled and copied (which played the sound and showed the
+/// bezel), and lets the hidden editor load it for the history without copying it again.
+pub async fn store_copied(app: &AppHandle, image: RgbaImage, scale: f64) -> Result<(), String> {
+    let (id, path) = write_capture(app, image).await?;
+    register(app, &id, path, scale);
+    // The copy and the history entry already exist; only the editor's copy is missing.
+    if let Err(error) = app.emit_to(EDITOR_WINDOW, READY_EVENT, CaptureReady { id, scale, copy: false }) {
+        eprintln!("capture-ready emit failed: {error}");
+    }
+    Ok(())
+}
+
+/// Writes the PNG of a new capture off the async runtime; returns its id and path.
+async fn write_capture(app: &AppHandle, image: RgbaImage) -> Result<(String, PathBuf), String> {
     let dir = capture_dir(app)?;
     let id = uuid::Uuid::new_v4().to_string();
     let path = dir.join(format!("{id}.png"));
@@ -430,9 +472,7 @@ pub async fn store_image(app: &AppHandle, image: RgbaImage, scale: f64) -> Resul
     tauri::async_runtime::spawn_blocking(move || images::write_png(&target, &image))
         .await
         .map_err(|error| error.to_string())??;
-    app_settings::play_capture_sound(app);
-    deliver(app, id, path, scale);
-    Ok(())
+    Ok((id, path))
 }
 
 /// Runs the system capture tool, the fallback when the own capture cannot read the screens.

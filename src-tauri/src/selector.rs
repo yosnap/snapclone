@@ -17,7 +17,7 @@ use xcap::image::RgbaImage;
 
 use crate::{
     capture::{self, CaptureKind},
-    crosshair, geometry, scroll,
+    crosshair, geometry, native_copy, scroll,
 };
 
 const WINDOW_PREFIX: &str = "selector-";
@@ -329,7 +329,7 @@ pub async fn finish_selection(app: AppHandle, window: WebviewWindow, rect: Rect)
         let (x, y, width, height) =
             crop_rect(rect, scale, shot.image.width(), shot.image.height()).ok_or("the selection is empty")?;
         let image = xcap::image::imageops::crop_imm(shot.image.as_ref(), x, y, width, height).to_image();
-        capture::store_image(&app, image, scale).await
+        native_copy::copy_or_store(&app, image, scale).await
     })
     .await
 }
@@ -388,7 +388,7 @@ async fn capture_picked_window(app: &AppHandle, session: Session, index: usize, 
             (xcap::image::imageops::crop_imm(shot.image.as_ref(), x, y, width, height).to_image(), scale)
         }
     };
-    capture::store_image(app, image, scale).await
+    native_copy::copy_or_store(app, image, scale).await
 }
 
 fn capture_window(id: u32) -> Result<RgbaImage, String> {

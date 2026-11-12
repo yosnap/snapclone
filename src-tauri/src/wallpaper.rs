@@ -76,13 +76,29 @@ pub type Served = (Vec<u8>, &'static str, String);
 
 /// Serves one variant of the current wallpaper. Errors are user-facing.
 pub fn serve(app: &AppHandle, variant: Variant) -> Result<Served, String> {
-    let path = current_path(app)?;
-    let cached = load(&app.state::<WallpaperCache>().0, path)?;
+    let cached = current(app)?;
     let version = cached.version.clone();
     match variant {
         Variant::Full => Ok((cached.bytes.to_vec(), cached.kind, version)),
         Variant::Version => Ok((version.clone().into_bytes(), "text/plain; charset=utf-8", version)),
         Variant::Thumbnail => Ok((thumbnail(&cached)?.to_vec(), "image/png", version)),
+    }
+}
+
+/// The current wallpaper file, read again only when it changed. Asks AppKit on the main
+/// thread and waits, so it must be called off the main thread.
+pub fn current(app: &AppHandle) -> Result<Arc<Cached>, String> {
+    load(&app.state::<WallpaperCache>().0, current_path(app)?)
+}
+
+impl Cached {
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Derived from the path and the modification date, so it changes with either.
+    pub fn version(&self) -> &str {
+        &self.version
     }
 }
 

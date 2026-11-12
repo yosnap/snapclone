@@ -37,7 +37,11 @@ import { isEditableTarget } from "./ui-helpers";
 import { requestWallpaper, wallpaperError } from "./wallpaper";
 import { Zoom } from "./zoom";
 
-/** `copy`: style and copy it without showing the editor ("Capturar zona y copiar"). */
+/**
+ * `copy`: style and copy it without showing the editor ("Capturar zona y copiar"). A
+ * capture Rust already styled and copied arrives without it and simply loads; Rust does
+ * not show the editor for it.
+ */
 type CaptureReady = { id: string; scale: number; copy?: boolean };
 
 fillIcons();

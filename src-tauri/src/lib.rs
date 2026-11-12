@@ -2,6 +2,7 @@ mod app_settings;
 mod capture;
 #[cfg(target_os = "macos")]
 mod capture_below;
+mod compose;
 mod crosshair;
 mod editor_window;
 mod export;
@@ -9,6 +10,7 @@ mod geometry;
 mod history;
 mod hud;
 mod images;
+mod native_copy;
 mod ocr;
 mod output;
 mod import;
@@ -41,6 +43,7 @@ pub fn run() {
         .manage(scroll::ScrollCapture::default())
         .manage(ocr::OcrCache::default())
         .manage(wallpaper::WallpaperCache::default())
+        .manage(compose::BlurredWallpaperCache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -124,7 +127,9 @@ pub fn run() {
             app_settings::set_app_toggle,
             app_settings::open_settings,
             app_settings::show_history,
-            app_settings::open_history_folder
+            app_settings::open_history_folder,
+            #[cfg(debug_assertions)]
+            compose::compose_debug
         ])
         .setup(|app| {
             app.manage(history::History::open(app.handle()));
@@ -137,6 +142,7 @@ pub fn run() {
             if let Err(error) = tray::extend_app_menu(app.handle()) {
                 eprintln!("the app menu could not be extended: {error}");
             }
+            native_copy::warm_up(app.handle());
             editor_window::show(app.handle(), true);
             Ok(())
         })
