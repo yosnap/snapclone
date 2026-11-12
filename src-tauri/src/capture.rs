@@ -19,8 +19,9 @@ use crate::{
 /// Lets the editor window finish hiding so it is not in the frozen screenshots.
 const HIDE_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
 /// How long the hidden editor has to style and copy a capture before it is shown instead.
-/// Generous, since detecting sensitive text in a large capture takes a few seconds.
-const COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// Generous: detecting sensitive text takes a few seconds in a large capture, and up to
+/// about 40 s when Vision's recognizer is not loaded yet (see `ocr::warm_up`).
+const COPY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub const EDITOR_WINDOW: &str = "main";
 const READY_EVENT: &str = "capture-ready";

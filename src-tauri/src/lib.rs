@@ -143,6 +143,7 @@ pub fn run() {
                 eprintln!("the app menu could not be extended: {error}");
             }
             native_copy::warm_up(app.handle());
+            ocr::warm_up(app.handle());
             editor_window::show(app.handle(), true);
             Ok(())
         })

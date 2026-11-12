@@ -131,6 +131,29 @@ pub async fn analyze(app: &AppHandle, id: &str) -> Result<Arc<Analysis>, String>
     .map_err(|error| error.to_string())?
 }
 
+/// Side of the blank image that warms Vision up; any image loads the recognizer.
+const WARM_UP_SIDE: u32 = 64;
+
+/// Loads Vision's text recognizer in the background at launch. macOS caches it per
+/// executable, so the first recognition after installing or updating the app takes about
+/// 30 s, and later ones a fraction of a second. Without this, that first one was the
+/// automatic redaction of a "Capturar zona y copiar", which copied half a minute late.
+pub fn warm_up(app: &AppHandle) {
+    let Ok(dir) = app.path().app_cache_dir() else { return };
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = dir.join("vision-warm-up.png");
+        let blank = xcap::image::RgbaImage::from_pixel(WARM_UP_SIDE, WARM_UP_SIDE, xcap::image::Rgba([255, 255, 255, 255]));
+        let warmed = std::fs::create_dir_all(&dir)
+            .map_err(|error| error.to_string())
+            .and_then(|()| crate::images::write_png(&path, &blank))
+            .and_then(|()| vision::recognize(&path).map(|_| ()));
+        let _ = std::fs::remove_file(&path);
+        if let Err(error) = warmed {
+            eprintln!("text recognition could not be warmed up: {error}");
+        }
+    });
+}
+
 /// Drops a deleted capture's analysis.
 pub fn forget(app: &AppHandle, id: &str) {
     app.state::<OcrCache>().0.forget(id);
