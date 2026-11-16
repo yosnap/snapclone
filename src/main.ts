@@ -24,6 +24,7 @@ import { bindInspector } from "./inspector";
 import { highlightDrops, listenNotices, openClipboard, openFile } from "./open-image";
 import { type StoredStyle, applyStoredStyle, toStoredStyle } from "./persisted-style";
 import { type MenuItem, closePopover, popoverContains } from "./popover";
+import { IS_MAC, applyPlatformClass, formatShortcut, isPrimaryModifier, isSecondaryModifier } from "./platform";
 import { bindPresets } from "./presets";
 import { bindRedactPanel } from "./redact-panel";
 import { type Capture, edgeColor, layout, makeCapture, outputCanvas, render } from "./render";
@@ -44,7 +45,11 @@ import { Zoom } from "./zoom";
  */
 type CaptureReady = { id: string; scale: number; copy?: boolean };
 
+applyPlatformClass();
 fillIcons();
+document.querySelector("#paste-shortcut")!.textContent = formatShortcut("V");
+document.querySelector("#copy-shortcut")!.textContent = formatShortcut("C");
+document.querySelector("#save-shortcut")!.textContent = formatShortcut("S");
 const canvas = document.querySelector<HTMLCanvasElement>("#editor-canvas")!;
 const canvasArea = document.querySelector<HTMLElement>("#canvas-area")!;
 const emptyState = document.querySelector<HTMLElement>("#empty-state")!;
@@ -528,25 +533,27 @@ function copyDetectedText(): void {
   );
 }
 
+const FILE_BROWSER_NAME = IS_MAC ? "el Finder" : "el Explorador de archivos";
+
 function revealSaved(): void {
-  invoke("reveal_saved").catch((error) => showStatus(`No se pudo abrir el Finder: ${error}`, true));
+  invoke("reveal_saved").catch((error) => showStatus(`No se pudo abrir ${FILE_BROWSER_NAME}: ${error}`, true));
 }
 
 function moreItems(): MenuItem[] {
   const noCapture = !capture;
   return [
-    { label: "Abrir en el Finder", action: revealSaved },
+    { label: `Abrir en ${FILE_BROWSER_NAME}`, action: revealSaved },
     { label: "Copiar texto detectado", action: copyDetectedText, disabled: noCapture },
     { label: "Ver texto detectado…", action: () => captureId && void textView.show(captureId), disabled: noCapture },
     "separator",
     { label: "Nueva captura", action: startCapture },
-    { label: "Abrir archivo…", shortcut: "⌘O", action: () => openFile(showStatus) },
+    { label: "Abrir archivo…", shortcut: formatShortcut("O"), action: () => openFile(showStatus) },
     { label: "Historial", action: () => void historyView.show() },
     "separator",
-    { label: "Deshacer", shortcut: "⌘Z", action: () => editor.undo(), disabled: noCapture },
-    { label: "Rehacer", shortcut: "⇧⌘Z", action: () => editor.redo(), disabled: noCapture },
+    { label: "Deshacer", shortcut: formatShortcut("Z"), action: () => editor.undo(), disabled: noCapture },
+    { label: "Rehacer", shortcut: formatShortcut("Z", { shift: true }), action: () => editor.redo(), disabled: noCapture },
     "separator",
-    { label: "Ajustes…", shortcut: "⌘,", action: openSettings },
+    { label: "Ajustes…", shortcut: IS_MAC ? "⌘," : "Ctrl+,", action: openSettings },
   ];
 }
 
@@ -675,26 +682,51 @@ document.addEventListener("keydown", (event) => {
   if (popoverContains(event.target)) return;
   const editingText = event.target instanceof HTMLInputElement && event.target.type === "text";
   const inForm = editingText || event.target instanceof HTMLSelectElement;
-  // ⇧⌘Z: native redo in a field, the editor's redo with a capture, otherwise reopen the last one.
-  if (event.metaKey && event.shiftKey && !event.altKey && !event.ctrlKey && event.key.toLowerCase() === "z") {
+  // Shift+Primary+Z (⇧⌘Z / Ctrl+Shift+Z): native redo in a field, the editor's redo with a
+  // capture, otherwise reopen the last one. `isSecondaryModifier` must be excluded here too,
+  // not just the primary one checked — see its doc comment for why.
+  if (isPrimaryModifier(event) && event.shiftKey && !event.altKey && !isSecondaryModifier(event) && event.key.toLowerCase() === "z") {
     if (isEditableTarget(event.target)) return;
     event.preventDefault();
     if (capture) editor.handleKey(event);
     else if (!outsideTauri) reopenLast(showStatus);
     return;
   }
+  // Ctrl+Y: Windows' own redo convention, outside a capture (with one open, annotation-editor
+  // handles it directly so the editor's own undo stack is used).
+  if (!IS_MAC && !capture && event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "y") {
+    if (isEditableTarget(event.target)) return;
+    event.preventDefault();
+    if (!outsideTauri) reopenLast(showStatus);
+    return;
+  }
   if (capture && !inForm && editor.handleKey(event)) {
     event.preventDefault();
     return;
   }
-  if (event.metaKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === "s") {
+  // Ctrl+O / Ctrl+,: on macOS these live in the native app menu (`tray::extend_app_menu`),
+  // which does not exist on Windows (`app.menu()` is `None` there) — handled here only on
+  // Windows so they are not triggered twice on macOS.
+  if (!IS_MAC && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
+    if (event.key.toLowerCase() === "o") {
+      event.preventDefault();
+      openFile(showStatus);
+      return;
+    }
+    if (event.key === ",") {
+      event.preventDefault();
+      openSettings();
+      return;
+    }
+  }
+  if (isPrimaryModifier(event) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "s") {
     event.preventDefault();
     saveAs();
     return;
   }
-  if (!event.metaKey || event.shiftKey || event.altKey) {
+  if (!isPrimaryModifier(event) || event.shiftKey || event.altKey) {
     // ⌘+ is ⇧⌘= on most layouts.
-    if (event.metaKey && !event.altKey && event.key === "+") {
+    if (isPrimaryModifier(event) && !event.altKey && event.key === "+") {
       event.preventDefault();
       zoom.zoomIn();
     }

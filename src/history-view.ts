@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { CAPTURE_ORIGIN } from "./platform";
 
 export type HistoryItem = { id: string; createdAt: number; scale: number };
 type HistoryPage = { items: HistoryItem[]; hasMore: boolean };
@@ -6,12 +7,12 @@ export type OpenedCapture = { id: string; scale: number; document: unknown };
 
 /** Captures are served by Rust under this scheme, with CORS so canvases stay exportable. */
 export function captureUrl(id: string): string {
-  return `capture://localhost/${encodeURIComponent(id)}`;
+  return `${CAPTURE_ORIGIN}/${encodeURIComponent(id)}`;
 }
 
 /** Small preview written next to each capture, so the grid never decodes full screenshots. */
 function thumbnailUrl(id: string): string {
-  return `capture://localhost/thumbnail/${encodeURIComponent(id)}`;
+  return `${CAPTURE_ORIGIN}/thumbnail/${encodeURIComponent(id)}`;
 }
 
 const DATE_FORMAT = new Intl.DateTimeFormat("es-ES", { dateStyle: "medium", timeStyle: "short" });

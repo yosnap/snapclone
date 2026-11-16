@@ -68,11 +68,39 @@ pub fn file_stem(pattern: &str, datetime: &str, uuid: &str) -> String {
     let expanded = pattern.replace("{datetime}", datetime).replace("{uuid}", uuid);
     let cleaned: String = expanded
         .chars()
-        .map(|character| if matches!(character, '/' | ':' | '\\') || character.is_control() { '-' } else { character })
+        .map(|character| if invalid_name_char(character) || character.is_control() { '-' } else { character })
         .collect();
     let trimmed = cleaned.trim().trim_start_matches('.').trim();
-    let stem: String = trimmed.chars().take(FILE_NAME_MAX_CHARS).collect();
-    if stem.is_empty() { DEFAULT_PATTERN.replace("{datetime}", datetime) } else { stem }
+    let mut stem: String = trimmed.chars().take(FILE_NAME_MAX_CHARS).collect();
+    if cfg!(windows) {
+        // Windows also rejects a name ending in a dot or a space.
+        stem = stem.trim_end_matches(['.', ' ']).to_string();
+    }
+    let stem = if stem.is_empty() { DEFAULT_PATTERN.replace("{datetime}", datetime) } else { stem };
+    if cfg!(windows) { avoid_reserved_name(stem) } else { stem }
+}
+
+/// `/`, `:` and `\` would change the folder or hide the file everywhere this app runs; Windows
+/// also rejects `< > " | ? *` outright (the save itself would fail with a cryptic OS error).
+fn invalid_name_char(character: char) -> bool {
+    matches!(character, '/' | ':' | '\\') || (cfg!(windows) && matches!(character, '<' | '>' | '"' | '|' | '?' | '*'))
+}
+
+/// Windows reserves these names for devices, with or without an extension (`NUL`, `NUL.png`
+/// alike): saving to one silently writes to the device instead of a file, losing the capture
+/// without any error at all. The pattern comes from the user's own settings, so this has to
+/// hold even for a name nobody would type by hand, like one built entirely from `{uuid}`.
+fn avoid_reserved_name(stem: String) -> String {
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1",
+        "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    // Windows checks the device name against everything up to the FIRST dot, not the whole
+    // name: "NUL.txt" and "nul.backup-1" redirect to the device exactly like bare "NUL" does,
+    // so a pattern containing a literal dot (e.g. "{uuid}.NUL" expands fine, but "NUL.{uuid}"
+    // would not) has to be checked the same way, not just an exact match on the full stem.
+    let device = stem.split('.').next().unwrap_or(&stem);
+    if RESERVED.iter().any(|name| name.eq_ignore_ascii_case(device)) { format!("_{stem}") } else { stem }
 }
 
 fn default_file_name(app: &AppHandle, datetime: &str) -> String {
@@ -95,9 +123,27 @@ pub fn unique_path(dir: &Path, name: &str, exists: impl Fn(&Path) -> bool) -> Re
         .ok_or_else(|| format!("there are already too many files named {name}"))
 }
 
+/// Whether `path` is safe to probe locally at all. On Windows this must run BEFORE any
+/// filesystem call on a path that was not just chosen fresh in a dialog (read back from
+/// settings, or remembered from an earlier save): `.is_dir()`/`.exists()` on a UNC path
+/// authenticates over SMB against whatever server it names, same as the shell calls
+/// `open_in_finder` itself refuses — checking only there is too late, since every caller of
+/// `save_folder`/`reveal_saved` already probed the path before `open_in_finder` ever ran.
+#[cfg(target_os = "windows")]
+fn is_locally_checkable(path: &Path) -> bool {
+    !windows::is_unc_path(path)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_locally_checkable(_path: &Path) -> bool {
+    true
+}
+
 /// The remembered folder, if it is still there.
 pub fn save_folder(app: &AppHandle) -> Option<PathBuf> {
-    prefs::read::<String>(app, SAVE_FOLDER_KEY).map(PathBuf::from).filter(|path| path.is_dir())
+    prefs::read::<String>(app, SAVE_FOLDER_KEY)
+        .map(PathBuf::from)
+        .filter(|path| is_locally_checkable(path) && path.is_dir())
 }
 
 /// Asks for a folder with the system dialog and remembers it. `None` when cancelled.
@@ -167,7 +213,7 @@ pub fn remember_saved(app: &AppHandle, path: PathBuf) {
 /// "Abrir en el Finder": the last saved file, selected, or else the save folder.
 #[tauri::command]
 pub fn reveal_saved(app: AppHandle, last: State<'_, LastSaved>) -> Result<(), String> {
-    let saved = last.0.lock().unwrap().clone().filter(|path| path.exists());
+    let saved = last.0.lock().unwrap().clone().filter(|path| is_locally_checkable(path) && path.exists());
     match (saved, save_folder(&app)) {
         (Some(file), _) => open_in_finder(&file, true),
         (None, Some(folder)) => open_in_finder(&folder, false),
@@ -181,6 +227,7 @@ pub fn open_save_folder(app: AppHandle) -> Result<(), String> {
 }
 
 /// Opens a folder, or selects a file in its folder, in the Finder.
+#[cfg(target_os = "macos")]
 pub fn open_in_finder(path: &Path, select: bool) -> Result<(), String> {
     let mut command = std::process::Command::new("/usr/bin/open");
     if select {
@@ -190,7 +237,32 @@ pub fn open_in_finder(path: &Path, select: bool) -> Result<(), String> {
     if status.success() { Ok(()) } else { Err(format!("the Finder could not open {}", path.display())) }
 }
 
+/// Opens a folder, or selects a file in its folder, in the Explorer. Never through a
+/// subprocess (`explorer.exe <path>` would EXECUTE a `save_folder` tampered to point at an
+/// `.exe`/`.lnk`/`.scr`, instead of opening it — see the Windows port plan's red team note) and
+/// never a UNC path (that would authenticate over SMB against whatever server it names,
+/// leaking the user's NTLM hash).
+#[cfg(target_os = "windows")]
+pub fn open_in_finder(path: &Path, select: bool) -> Result<(), String> {
+    if windows::is_unc_path(path) {
+        return Err("Snapclone no abre carpetas de red por seguridad; ábrela desde el Explorador".into());
+    }
+    if select {
+        if !path.is_file() {
+            return Err("el archivo ya no existe".into());
+        }
+        let folder = path.parent().filter(|parent| parent.is_dir()).ok_or("la carpeta ya no existe")?;
+        windows::reveal(folder, Some(path))
+    } else {
+        if !path.is_dir() {
+            return Err("la carpeta ya no existe".into());
+        }
+        windows::reveal(path, None)
+    }
+}
+
 /// "Enviar comentarios": an empty message in the default mail app.
+#[cfg(target_os = "macos")]
 #[tauri::command]
 pub fn send_feedback() -> Result<(), String> {
     let status = std::process::Command::new("/usr/bin/open")
@@ -200,7 +272,130 @@ pub fn send_feedback() -> Result<(), String> {
     if status.success() { Ok(()) } else { Err("no hay ninguna app de correo configurada".into()) }
 }
 
-fn export_root(app: &AppHandle) -> Result<PathBuf, String> {
+/// Same, via `ShellExecuteW` — never `cmd /c start`, which would flash a console (this app is
+/// `windows_subsystem = "windows"`) and run the target through `cmd`'s own parser.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn send_feedback() -> Result<(), String> {
+    windows::send_feedback()
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::{
+        os::windows::ffi::OsStrExt,
+        path::{Component, Path, Prefix},
+    };
+
+    use windows::{
+        Win32::{
+            System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize},
+            UI::{
+                Shell::{Common::ITEMIDLIST, SHOpenFolderAndSelectItems, SHParseDisplayName, ShellExecuteW},
+                WindowsAndMessaging::SW_SHOWNORMAL,
+            },
+        },
+        core::PCWSTR,
+    };
+
+    pub fn is_unc_path(path: &Path) -> bool {
+        matches!(
+            path.components().next(),
+            Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..))
+        )
+    }
+
+    /// Balances a successful `CoInitializeEx` with `CoUninitialize`. A failure other than
+    /// "already initialized with a different model" (typically WebView2's own COM use on this
+    /// same main thread) is not treated as fatal: the shell calls below tend to work regardless.
+    struct ComGuard(bool);
+
+    impl ComGuard {
+        fn new() -> Self {
+            // SAFETY: a plain COM initialization call, balanced in `Drop`.
+            let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            Self(result.is_ok())
+        }
+    }
+
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                // SAFETY: only reached after a successful `CoInitializeEx` on this thread.
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    struct Pidl(*mut ITEMIDLIST);
+
+    impl Drop for Pidl {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: `self.0` came from `SHParseDisplayName`, owned only by this guard.
+                unsafe { CoTaskMemFree(Some(self.0.cast())) };
+            }
+        }
+    }
+
+    fn parse_pidl(path: &Path) -> Result<Pidl, String> {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let mut pidl = std::ptr::null_mut();
+        // SAFETY: `wide` is a valid, null-terminated wide string for the duration of the call.
+        unsafe { SHParseDisplayName(PCWSTR::from_raw(wide.as_ptr()), None, &mut pidl, 0, None) }
+            .map_err(|error| error.to_string())?;
+        Ok(Pidl(pidl))
+    }
+
+    /// `file`, when given, is revealed selected inside `folder`; otherwise `folder` itself
+    /// opens. The Shell always opens a folder window here, never runs anything.
+    pub fn reveal(folder: &Path, file: Option<&Path>) -> Result<(), String> {
+        let _com = ComGuard::new();
+        let folder_pidl = parse_pidl(folder)?;
+        let result = match file {
+            Some(file) => {
+                let file_pidl = parse_pidl(file)?;
+                let items = [file_pidl.0.cast_const()];
+                // SAFETY: both PIDLs are valid for the call and freed by their own guards.
+                unsafe { SHOpenFolderAndSelectItems(folder_pidl.0, Some(&items), 0) }
+            }
+            // SAFETY: `folder_pidl` is valid for the call.
+            None => unsafe { SHOpenFolderAndSelectItems(folder_pidl.0, None, 0) },
+        };
+        result.map_err(|error| error.to_string())
+    }
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn send_feedback() -> Result<(), String> {
+        let _com = ComGuard::new();
+        let operation = wide("open");
+        let target = wide("mailto:?subject=Snapclone");
+        // SAFETY: both strings are valid, null-terminated wide strings for the call.
+        let instance = unsafe {
+            ShellExecuteW(None, PCWSTR::from_raw(operation.as_ptr()), PCWSTR::from_raw(target.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL)
+        };
+        if instance.0 as isize > 32 { Ok(()) } else { Err("no hay ninguna app de correo configurada".into()) }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn unc_paths_are_detected_in_both_forms() {
+            assert!(is_unc_path(Path::new(r"\\server\share\file.png")));
+            assert!(is_unc_path(Path::new(r"\\?\UNC\server\share\file.png")));
+            assert!(!is_unc_path(Path::new(r"C:\Users\javi\Desktop\file.png")));
+            assert!(!is_unc_path(Path::new("file.png")));
+        }
+    }
+}
+
+pub(crate) fn export_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_cache_dir().map_err(|error| error.to_string())?.join(EXPORT_DIR))
 }
 
@@ -280,6 +475,30 @@ mod tests {
         assert_eq!(file_stem("a:b\\c\n", WHEN, "u"), "a-b-c-");
         assert_eq!(file_stem("   ", WHEN, "u"), format!("Snapclone {WHEN}"));
         assert_eq!(file_stem(&"x".repeat(500), WHEN, "u").chars().count(), FILE_NAME_MAX_CHARS);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stem_replaces_windows_only_invalid_characters() {
+        assert_eq!(file_stem("a<b>c\"d|e?f*g", WHEN, "u"), "a-b-c-d-e-f-g");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stem_trims_trailing_dots_and_spaces() {
+        assert_eq!(file_stem("nombre.", WHEN, "u"), "nombre");
+        assert_eq!(file_stem("nombre ", WHEN, "u"), "nombre");
+        assert_eq!(file_stem("nombre. . ", WHEN, "u"), "nombre");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stem_avoids_reserved_device_names() {
+        assert_eq!(file_stem("NUL", WHEN, "u"), "_NUL");
+        assert_eq!(file_stem("con", WHEN, "u"), "_con");
+        assert_eq!(file_stem("COM1", WHEN, "u"), "_COM1");
+        assert_eq!(file_stem("CONSOLE", WHEN, "u"), "CONSOLE", "not an exact reserved name");
+        assert_eq!(file_stem("NUL.txt", WHEN, "u"), "_NUL.txt", "reserved up to the first dot too");
     }
 
     #[test]

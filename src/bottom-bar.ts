@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { formatShortcut } from "./platform";
 import { type MenuItem, showMenu } from "./popover";
 import type { Zoom } from "./zoom";
 
@@ -53,7 +54,7 @@ export class BottomBar {
   private zoomItems(): MenuItem[] {
     const fit = this.zoom.isFit;
     return [
-      { label: "Ajustar", shortcut: "⌘0", checked: fit, action: () => this.zoom.set("fit") },
+      { label: "Ajustar", shortcut: formatShortcut("0"), checked: fit, action: () => this.zoom.set("fit") },
       "separator",
       ...ZOOM_CHOICES.map((level) => ({
         label: `${level * 100}%`,
@@ -61,8 +62,8 @@ export class BottomBar {
         action: () => this.zoom.set(level),
       })),
       "separator",
-      { label: "Acercar", shortcut: "⌘+", action: () => this.zoom.zoomIn() },
-      { label: "Alejar", shortcut: "⌘−", action: () => this.zoom.zoomOut() },
+      { label: "Acercar", shortcut: formatShortcut("+"), action: () => this.zoom.zoomIn() },
+      { label: "Alejar", shortcut: formatShortcut("−"), action: () => this.zoom.zoomOut() },
     ];
   }
 

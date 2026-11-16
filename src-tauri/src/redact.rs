@@ -198,8 +198,9 @@ mod tests {
         assert!(categories("Supercalifragilisticexpialidociousword").is_empty());
     }
 
-    /// Runs real Vision OCR: `REDACT_SAMPLE=/path/to.png cargo test -- --ignored --nocapture`.
-    #[cfg(target_os = "macos")]
+    /// Runs real OCR (Vision on macOS, Windows.Media.Ocr on Windows):
+    /// `REDACT_SAMPLE=/path/to.png cargo test -- --ignored --nocapture`.
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     #[ignore = "needs a sample image in REDACT_SAMPLE"]
     fn vision_finds_regions_in_sample_image() {

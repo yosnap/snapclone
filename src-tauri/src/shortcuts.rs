@@ -17,21 +17,40 @@ use crate::{capture::{self, CaptureAction}, prefs, tray};
 
 const SHORTCUTS_KEY: &str = "shortcuts";
 /// The system screenshot shortcuts, which macOS keeps for itself.
-const RESERVED: [(Modifiers, Code); 3] = [
+#[cfg(target_os = "macos")]
+const RESERVED: &[(Modifiers, Code)] = &[
     (Modifiers::SUPER.union(Modifiers::SHIFT), Code::Digit3),
     (Modifiers::SUPER.union(Modifiers::SHIFT), Code::Digit4),
     (Modifiers::SUPER.union(Modifiers::SHIFT), Code::Digit5),
 ];
-/// The modifiers a shortcut can be made of, in the order macOS shows them.
+/// Win+Shift+S opens Windows' own Snipping Tool ("Recortes"), which Snapclone's defaults must
+/// never collide with.
+#[cfg(windows)]
+const RESERVED: &[(Modifiers, Code)] = &[(Modifiers::SUPER.union(Modifiers::SHIFT), Code::KeyS)];
+#[cfg(not(any(target_os = "macos", windows)))]
+const RESERVED: &[(Modifiers, Code)] = &[];
+/// Canonical stored/menu-accelerator names (2nd column) are never changed on any platform:
+/// changing them would break `parse(canonical(x)) == x` and every saved shortcut. Only the
+/// visible `label()` differs per platform (see below), and it does NOT read this 3rd column on
+/// Windows.
 const MODIFIERS: [(Modifiers, &str, &str); 4] = [
     (Modifiers::CONTROL, "Ctrl", "⌃"),
     (Modifiers::ALT, "Alt", "⌥"),
     (Modifiers::SHIFT, "Shift", "⇧"),
     (Modifiers::SUPER, "Cmd", "⌘"),
 ];
+/// Display names for `label()` on Windows, joined with `+` instead of concatenated symbols.
+#[cfg(not(target_os = "macos"))]
+const WINDOWS_MODIFIER_LABELS: [(Modifiers, &str); 4] = [
+    (Modifiers::CONTROL, "Ctrl"),
+    (Modifiers::ALT, "Alt"),
+    (Modifiers::SHIFT, "Shift"),
+    (Modifiers::SUPER, "Win"),
+];
 
 /// Like the original Xnapper: a zone opens in the editor with ⌃⌥⌘4 and is copied with
 /// ⌃⌥⌘5; the rest are ⇧⌘ plus a digit.
+#[cfg(target_os = "macos")]
 fn default_shortcut(action: CaptureAction) -> Shortcut {
     let zone = |key| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER), key);
     let key = match action {
@@ -42,6 +61,20 @@ fn default_shortcut(action: CaptureAction) -> Shortcut {
         CaptureAction::Scroll => Code::Digit9,
     };
     Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), key)
+}
+
+/// Windows has no Cmd key: every default uses Ctrl+Alt+Shift, never Win (`Modifiers::SUPER`),
+/// which the shell reserves for itself (Win+Shift+<digit> opens a taskbar app's instance).
+#[cfg(not(target_os = "macos"))]
+fn default_shortcut(action: CaptureAction) -> Shortcut {
+    let key = match action {
+        CaptureAction::Region => Code::Digit4,
+        CaptureAction::RegionCopy => Code::Digit5,
+        CaptureAction::Window => Code::Digit7,
+        CaptureAction::Screen => Code::Digit8,
+        CaptureAction::Scroll => Code::Digit9,
+    };
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT), key)
 }
 
 type Assigned = HashMap<CaptureAction, Option<Shortcut>>;
@@ -84,6 +117,7 @@ pub fn canonical(shortcut: &Shortcut) -> String {
 }
 
 /// How macOS writes a shortcut, e.g. `⌃⇧⌘A`.
+#[cfg(target_os = "macos")]
 pub fn label(shortcut: &Shortcut) -> String {
     let mut text: String = MODIFIERS
         .iter()
@@ -92,6 +126,19 @@ pub fn label(shortcut: &Shortcut) -> String {
         .collect();
     text.push_str(&key_label(shortcut.key));
     text
+}
+
+/// How Windows writes a shortcut: modifier names joined with `+`, e.g. `Ctrl+Alt+Shift+4`,
+/// never concatenated symbols.
+#[cfg(not(target_os = "macos"))]
+pub fn label(shortcut: &Shortcut) -> String {
+    let mut parts: Vec<String> = WINDOWS_MODIFIER_LABELS
+        .iter()
+        .filter(|(modifier, _)| shortcut.mods.contains(*modifier))
+        .map(|(_, name)| (*name).to_string())
+        .collect();
+    parts.push(key_label(shortcut.key));
+    parts.join("+")
 }
 
 fn key_label(key: Code) -> String {
@@ -136,7 +183,12 @@ fn key_label(key: Code) -> String {
 pub fn parse(text: &str) -> Result<Shortcut, String> {
     let shortcut = Shortcut::from_str(text).map_err(|_| "Esa tecla no se puede usar en un atajo".to_string())?;
     if !shortcut.mods.intersects(Modifiers::SUPER | Modifiers::ALT | Modifiers::CONTROL) {
-        return Err("El atajo debe llevar ⌘, ⌥ o ⌃ (⇧ solo no basta)".into());
+        let message = if cfg!(target_os = "macos") {
+            "El atajo debe llevar ⌘, ⌥ o ⌃ (⇧ solo no basta)"
+        } else {
+            "El atajo debe llevar Ctrl, Alt o Win (Shift solo no basta)"
+        };
+        return Err(message.into());
     }
     Ok(shortcut)
 }
@@ -144,7 +196,8 @@ pub fn parse(text: &str) -> Result<Shortcut, String> {
 /// Rejects the system screenshot shortcuts and any shortcut another capture action already has.
 pub fn validate(action: CaptureAction, candidate: &Shortcut, assigned: &Assigned) -> Result<(), String> {
     if RESERVED.iter().any(|&(mods, key)| candidate.mods == mods && candidate.key == key) {
-        return Err(format!("{} está reservado por macOS para sus capturas de pantalla", label(candidate)));
+        let owner = if cfg!(target_os = "macos") { "macOS para sus capturas de pantalla" } else { "Windows para sus propias capturas" };
+        return Err(format!("{} está reservado por {owner}", label(candidate)));
     }
     let taken = CaptureAction::ALL
         .into_iter()
@@ -340,6 +393,7 @@ mod tests {
         assigned[&action].as_ref().map(canonical)
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn defaults_follow_xnapper_then_cmd_shift_seven_eight_nine() {
         let assigned = defaults();
@@ -350,6 +404,17 @@ mod tests {
         assert_eq!(text(&assigned, CaptureAction::Scroll).as_deref(), Some("Shift+Cmd+Digit9"));
     }
 
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn defaults_use_ctrl_alt_shift_on_windows() {
+        let assigned = defaults();
+        assert_eq!(text(&assigned, CaptureAction::Region).as_deref(), Some("Ctrl+Alt+Shift+Digit4"));
+        assert_eq!(text(&assigned, CaptureAction::RegionCopy).as_deref(), Some("Ctrl+Alt+Shift+Digit5"));
+        assert_eq!(text(&assigned, CaptureAction::Window).as_deref(), Some("Ctrl+Alt+Shift+Digit7"));
+        assert_eq!(text(&assigned, CaptureAction::Screen).as_deref(), Some("Ctrl+Alt+Shift+Digit8"));
+        assert_eq!(text(&assigned, CaptureAction::Scroll).as_deref(), Some("Ctrl+Alt+Shift+Digit9"));
+    }
+
     #[test]
     fn action_ids_match_their_serialized_form() {
         for action in CaptureAction::ALL {
@@ -358,6 +423,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn canonical_form_round_trips_and_labels_like_macos() {
         let parsed = shortcut("Cmd+Ctrl+Shift+KeyA");
@@ -365,6 +431,18 @@ mod tests {
         assert_eq!(parse(&canonical(&parsed)).unwrap(), parsed);
         assert_eq!(label(&parsed), "⌃⇧⌘A");
         assert_eq!(label(&shortcut("Alt+Space")), "⌥Espacio");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn canonical_form_round_trips_and_labels_on_windows() {
+        // The canonical (2nd column) form never changes per platform — it is what gets saved.
+        let parsed = shortcut("Cmd+Ctrl+Shift+KeyA");
+        assert_eq!(canonical(&parsed), "Ctrl+Shift+Cmd+KeyA");
+        assert_eq!(parse(&canonical(&parsed)).unwrap(), parsed);
+        // Only the visible label differs: modifier names joined with "+", "Win" instead of "Cmd".
+        assert_eq!(label(&parsed), "Ctrl+Shift+Win+A");
+        assert_eq!(label(&shortcut("Alt+Space")), "Alt+Espacio");
     }
 
     #[test]
@@ -376,6 +454,7 @@ mod tests {
         assert!(parse("Ctrl+Shift+KeyA").is_ok());
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn system_screenshot_shortcuts_are_reserved() {
         for key in ["Digit3", "Digit4", "Digit5"] {
@@ -385,6 +464,15 @@ mod tests {
         assert!(validate(CaptureAction::Region, &shortcut("Cmd+Alt+Digit3"), &defaults()).is_ok());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn snipping_tool_shortcut_is_reserved_on_windows() {
+        let error = validate(CaptureAction::Region, &shortcut("Cmd+Shift+KeyS"), &defaults()).unwrap_err();
+        assert!(error.contains("reservado"), "{error}");
+        assert!(validate(CaptureAction::Region, &shortcut("Cmd+Alt+KeyS"), &defaults()).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_shortcut_used_by_another_action_conflicts() {
         let error = validate(CaptureAction::Region, &shortcut("Shift+Cmd+Digit7"), &defaults()).unwrap_err();
@@ -393,6 +481,17 @@ mod tests {
         assert_eq!(error, "⌃⌥⌘5 ya se usa para «Capturar y copiar al portapapeles»");
         // Re-assigning an action its own shortcut is fine.
         assert!(validate(CaptureAction::Window, &shortcut("Shift+Cmd+Digit7"), &defaults()).is_ok());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_shortcut_used_by_another_action_conflicts_on_windows() {
+        let error = validate(CaptureAction::Region, &shortcut("Ctrl+Alt+Shift+Digit7"), &defaults()).unwrap_err();
+        assert_eq!(error, "Ctrl+Alt+Shift+7 ya se usa para «Capturar ventana»");
+        let error = validate(CaptureAction::Region, &shortcut("Ctrl+Alt+Shift+Digit5"), &defaults()).unwrap_err();
+        assert_eq!(error, "Ctrl+Alt+Shift+5 ya se usa para «Capturar y copiar al portapapeles»");
+        // Re-assigning an action its own shortcut is fine.
+        assert!(validate(CaptureAction::Window, &shortcut("Ctrl+Alt+Shift+Digit7"), &defaults()).is_ok());
     }
 
     #[test]
@@ -420,6 +519,7 @@ mod tests {
         assert_eq!(assigned[&CaptureAction::Window], Some(default_shortcut(CaptureAction::Window)));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_saved_choice_beats_the_copy_default() {
         // Saved when ⌃⌥⌘5 was the zone default: the zone keeps it and copying gets none.
@@ -432,6 +532,25 @@ mod tests {
         let saved = HashMap::from([("scroll".to_string(), Some("Ctrl+Alt+Cmd+Digit4".to_string()))]);
         let assigned = load(Some(saved));
         assert_eq!(text(&assigned, CaptureAction::Scroll).as_deref(), Some("Ctrl+Alt+Cmd+Digit4"));
+        assert_eq!(assigned[&CaptureAction::Region], None);
+    }
+
+    /// Found only by actually running the suite on Windows (not caught by scout/predict/red
+    /// team): every Windows default uses the same Ctrl+Alt+Shift combo (see
+    /// `default_shortcut`), so a saved shortcut on one action's own default digit now also
+    /// collides with another action's default — same scenario as the macOS test above, with
+    /// Shift standing in for Cmd.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_saved_choice_beats_the_copy_default_on_windows() {
+        let saved = HashMap::from([("region".to_string(), Some("Ctrl+Alt+Shift+Digit5".to_string()))]);
+        let assigned = load(Some(saved));
+        assert_eq!(text(&assigned, CaptureAction::Region).as_deref(), Some("Ctrl+Alt+Shift+Digit5"));
+        assert_eq!(assigned[&CaptureAction::RegionCopy], None);
+
+        let saved = HashMap::from([("scroll".to_string(), Some("Ctrl+Alt+Shift+Digit4".to_string()))]);
+        let assigned = load(Some(saved));
+        assert_eq!(text(&assigned, CaptureAction::Scroll).as_deref(), Some("Ctrl+Alt+Shift+Digit4"));
         assert_eq!(assigned[&CaptureAction::Region], None);
     }
 }

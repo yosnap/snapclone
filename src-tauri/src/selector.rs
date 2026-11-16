@@ -38,20 +38,45 @@ struct Session {
 }
 
 struct MonitorShot {
-    /// Global position and size in points, as the overlay window is laid out.
+    /// Global position and size: points on macOS (what `xcap` already gives there), physical
+    /// pixels on Windows (what `xcap` gives there instead — see `native_to_css`).
     x: i32,
     y: i32,
     width: u32,
     height: u32,
     /// Shared so the overlay can be sent its frame without copying under the lock.
     image: Arc<RgbaImage>,
+    /// Image pixels per CSS point, computed once at capture time (see `shot_scale`).
+    scale: f64,
 }
 
 impl MonitorShot {
-    /// Pixels per point, from the actual image rather than the reported display mode.
     fn scale(&self) -> f64 {
-        f64::from(self.image.width()) / f64::from(self.width.max(1))
+        self.scale
     }
+
+    /// How many of this monitor's native units (`x`/`y`/`width`/`height`, and `xcap::Window`
+    /// geometry, which uses the same space) make up one CSS point: 1 on macOS, where that
+    /// native unit already IS points; this monitor's DPI factor on Windows, where it is
+    /// physical pixels like the captured image. Multiply a CSS quantity by this to reach the
+    /// native unit, or divide a native quantity by it to reach CSS.
+    fn native_to_css(&self) -> f64 {
+        if cfg!(target_os = "macos") { 1.0 } else { self.scale }
+    }
+}
+
+/// Image pixels per CSS point for a freshly captured monitor. On macOS `width` is already in
+/// points, so the ratio against the image's pixel width gives the Retina factor directly. On
+/// Windows `width` is physical pixels (the same unit the image already is), so that ratio is
+/// always 1 — the real DPI factor comes from `scale_factor()` instead.
+#[cfg(target_os = "macos")]
+fn shot_scale(_monitor: &xcap::Monitor, image_width: u32, width: u32) -> f64 {
+    f64::from(image_width) / f64::from(width.max(1))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn shot_scale(monitor: &xcap::Monitor, _image_width: u32, _width: u32) -> f64 {
+    monitor.scale_factor().map(f64::from).unwrap_or(1.0)
 }
 
 /// A window that can be picked in window mode, in global points. Front-most first.
@@ -108,12 +133,15 @@ pub fn open(app: &AppHandle, kind: CaptureKind) -> Result<(), String> {
     let shots = monitors
         .iter()
         .map(|monitor| {
+            let image = Arc::new(monitor.capture_image()?);
+            let width = monitor.width()?;
             Ok(MonitorShot {
                 x: monitor.x()?,
                 y: monitor.y()?,
-                width: monitor.width()?,
+                width,
                 height: monitor.height()?,
-                image: Arc::new(monitor.capture_image()?),
+                scale: shot_scale(monitor, image.width(), width),
+                image,
             })
         })
         .collect::<xcap::XCapResult<Vec<_>>>()
@@ -163,10 +191,9 @@ fn window_info(window: &xcap::Window, own_pid: u32) -> Option<WindowInfo> {
 }
 
 fn open_overlay(app: &AppHandle, index: usize, x: i32, y: i32, width: u32, height: u32) -> tauri::Result<()> {
-    let window = WebviewWindowBuilder::new(app, format!("{WINDOW_PREFIX}{index}"), WebviewUrl::App(PAGE.into()))
+    #[allow(unused_mut)]
+    let mut builder = WebviewWindowBuilder::new(app, format!("{WINDOW_PREFIX}{index}"), WebviewUrl::App(PAGE.into()))
         .title("Snapclone")
-        .position(f64::from(x), f64::from(y))
-        .inner_size(f64::from(width), f64::from(height))
         .decorations(false)
         .resizable(false)
         .shadow(false)
@@ -177,9 +204,35 @@ fn open_overlay(app: &AppHandle, index: usize, x: i32, y: i32, width: u32, heigh
         // Shown by `selector_ready` once the frozen image is painted: an overlay shown
         // empty would flash every monitor black before the image arrives.
         .visible(false)
-        .focused(false)
-        .build()?;
+        .focused(false);
+    // On macOS `x`/`y`/`width`/`height` are already points, which these logical builder
+    // methods expect. On Windows they are physical pixels instead; positioning there happens
+    // after `build()` via `place_physical`, which bypasses logical/DPI conversion entirely.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.position(f64::from(x), f64::from(y)).inner_size(f64::from(width), f64::from(height));
+    }
+    let window = builder.build()?;
+    #[cfg(not(target_os = "macos"))]
+    place_physical(&window, x, y, width, height)?;
+    #[cfg(windows)]
+    crate::webview_keys::disable_browser_accelerator_keys(&window);
     raise_above_menu_bar(app, window);
+    Ok(())
+}
+
+/// Positions and sizes a hidden window using physical pixels directly. Converting each
+/// monitor's physical rect to "points" with its own DPI scale does not compose across
+/// monitors at different scales (see the HiDPI note in the Windows port plan), so Windows
+/// windows are placed in physical pixels throughout instead, which has no such ambiguity.
+/// `set_size` is re-applied after `set_position` because crossing a DPI boundary can make
+/// Windows resize the window on its own (`WM_DPICHANGED`).
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn place_physical(window: &WebviewWindow, x: i32, y: i32, width: u32, height: u32) -> tauri::Result<()> {
+    use tauri::{PhysicalPosition, PhysicalSize};
+    window.set_position(PhysicalPosition::new(x, y))?;
+    window.set_size(PhysicalSize::new(width, height))?;
+    window.set_size(PhysicalSize::new(width, height))?;
     Ok(())
 }
 
@@ -270,13 +323,22 @@ pub fn selector_info(window: WebviewWindow, selection: State<'_, Selection>) -> 
     let session = selection.0.lock().unwrap();
     let session = session.as_ref().ok_or("no selection in progress")?;
     let shot = session.monitors.get(index).ok_or("unknown monitor")?;
+    // `info.*` is in the monitor's native unit (see `MonitorShot`); the page always works in
+    // CSS points, so both the offset and the size are converted via `native_to_css` (a no-op
+    // on macOS, where that native unit already is points).
+    let css = shot.native_to_css();
+    let (overlay_width, overlay_height) = (f64::from(shot.width) / css, f64::from(shot.height) / css);
     let windows = session
         .windows
         .iter()
-        .map(|info| WindowInfo { x: info.x - f64::from(shot.x), y: info.y - f64::from(shot.y), ..info.clone() })
-        .filter(|info| {
-            info.x < f64::from(shot.width) && info.y < f64::from(shot.height) && info.x + info.width > 0.0 && info.y + info.height > 0.0
+        .map(|info| WindowInfo {
+            x: (info.x - f64::from(shot.x)) / css,
+            y: (info.y - f64::from(shot.y)) / css,
+            width: info.width / css,
+            height: info.height / css,
+            ..info.clone()
         })
+        .filter(|info| info.x < overlay_width && info.y < overlay_height && info.x + info.width > 0.0 && info.y + info.height > 0.0)
         .collect();
     Ok(OverlayInfo { kind: session.kind, pixel_width: shot.image.width(), pixel_height: shot.image.height(), windows })
 }
@@ -338,7 +400,10 @@ pub async fn finish_selection(app: AppHandle, window: WebviewWindow, rect: Rect)
 fn start_scroll(app: &AppHandle, session: Session, index: usize, rect: Rect) -> Result<(), String> {
     let bounds = |shot: &MonitorShot| geometry::Rect::new(shot.x, shot.y, shot.width, shot.height);
     let shot = session.monitors.get(index).ok_or("unknown monitor")?;
-    let started = crop_rect(rect, 1.0, shot.width, shot.height)
+    // `rect` comes from the page in CSS points; `shot.width`/`shot.height` are its native unit
+    // (points on macOS — hence the `1.0` this replaces — physical pixels on Windows), so the
+    // scale needed here is `native_to_css`, not the image-pixel ratio `scale()` uses elsewhere.
+    let started = crop_rect(rect, shot.native_to_css(), shot.width, shot.height)
         .ok_or_else(|| "the selection is empty".to_string())
         .and_then(|(x, y, width, height)| {
             let others = session.monitors.iter().enumerate().filter(|(other, _)| *other != index).map(|(_, shot)| bounds(shot));
@@ -348,6 +413,7 @@ fn start_scroll(app: &AppHandle, session: Session, index: usize, rect: Rect) -> 
                     monitor: bounds(shot),
                     zone: geometry::Rect::new(x as i32, y as i32, width, height),
                     others: others.collect(),
+                    scale: shot.scale(),
                 },
             )
         });
@@ -376,16 +442,27 @@ async fn capture_picked_window(app: &AppHandle, session: Session, index: usize, 
         .map_err(|error| error.to_string())?;
     let (image, scale) = match captured {
         Ok(image) => {
-            let scale = f64::from(image.width()) / info.width.max(1.0);
+            // `info.width` is the window's own native size; on macOS that already is CSS
+            // points, so the ratio against the freshly captured image gives the Retina factor
+            // directly. On Windows it is physical pixels like the image (ratio always 1), so
+            // the viewing monitor's own DPI factor is used instead — a good approximation,
+            // since a picked window is almost always on the monitor it was picked from.
+            let scale =
+                if cfg!(target_os = "macos") { f64::from(image.width()) / info.width.max(1.0) } else { shot.scale() };
             (image, scale)
         }
         Err(error) => {
             eprintln!("window capture failed, cropping the screen instead: {error}");
             let local = Rect { x: info.x - f64::from(shot.x), y: info.y - f64::from(shot.y), width: info.width, height: info.height };
-            let scale = shot.scale();
+            // `local` is in the monitor's native unit. On macOS that is points, so reaching
+            // the frozen image's pixels still needs the Retina factor (`scale()`). On Windows
+            // it is already physical pixels like that image, so no further scaling is needed
+            // for the crop itself — but the scale recorded for the result must still mean
+            // "image pixels per CSS point" like everywhere else, hence `shot.scale()` below.
+            let crop_scale = if cfg!(target_os = "macos") { shot.scale() } else { 1.0 };
             let (x, y, width, height) =
-                crop_rect(local, scale, shot.image.width(), shot.image.height()).ok_or("the window is off screen")?;
-            (xcap::image::imageops::crop_imm(shot.image.as_ref(), x, y, width, height).to_image(), scale)
+                crop_rect(local, crop_scale, shot.image.width(), shot.image.height()).ok_or("the window is off screen")?;
+            (xcap::image::imageops::crop_imm(shot.image.as_ref(), x, y, width, height).to_image(), shot.scale())
         }
     };
     native_copy::copy_or_store(app, image, scale).await

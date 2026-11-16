@@ -30,6 +30,7 @@
           <button type="button" class="pill tip-pill" id="tip-button">Tip: usa las teclas numéricas (1, 2, 3, 4)</button>
         </div>
         <div class="titlebar-spacer" data-tauri-drag-region></div>
+        <button type="button" class="pill feedback-pill" data-action="capture">Nuevo</button>
         <button type="button" class="pill feedback-pill" id="feedback-button">Enviar comentarios</button>
         <button type="button" class="pill icon-pill" id="share-button" title="Compartir" aria-label="Compartir" disabled>
           <span data-icon="share" data-icon-size="17"></span>
@@ -44,7 +45,7 @@
             </div>
             <div id="empty-state" class="empty-state">
               <p id="empty-hint">Usa el botón o el icono de la barra de menús.</p>
-              <p class="empty-extra">También puedes arrastrar aquí una imagen o pegarla con <kbd>⌘V</kbd>.</p>
+              <p class="empty-extra">También puedes arrastrar aquí una imagen o pegarla con <kbd id="paste-shortcut"></kbd>.</p>
               <button type="button" class="push-button" data-action="capture">Capturar región</button>
             </div>
             <input id="text-entry" class="text-entry" type="text" hidden aria-label="Texto de la anotación" />
@@ -55,8 +56,8 @@
               <div class="drag-pill" id="drag-button" role="button" tabindex="-1" aria-disabled="true" title="Arrastra la imagen a otra app">
                 <span data-icon="grip" data-icon-size="18"></span><span>Arrástrame</span>
               </div>
-              <button type="button" class="bar-button" id="copy-button" disabled>Copiar ⌘C</button>
-              <button type="button" class="bar-button" id="save-button" disabled>Guardar ⌘S</button>
+              <button type="button" class="bar-button" id="copy-button" disabled>Copiar <span id="copy-shortcut"></span></button>
+              <button type="button" class="bar-button" id="save-button" disabled>Guardar <span id="save-shortcut"></span></button>
               <button type="button" class="bar-button" id="save-as-button" disabled>Guardar como…</button>
               <button type="button" class="bar-button zoom-button" id="zoom-button" aria-haspopup="menu">
                 <span id="zoom-label">100%</span><span data-icon="chevron-down" data-icon-size="13"></span>

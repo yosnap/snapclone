@@ -32,6 +32,25 @@ npm run tauri:dev
 
 La primera vez, macOS pedirá el permiso de Grabación de pantalla para Snapclone Dev.
 
+## Preparar el entorno en Windows
+
+Necesitas Windows 10 u 11 (64 bits) y:
+
+- [Node](https://nodejs.org) 20 o posterior, con npm;
+- [Rust](https://rustup.rs) estable con el objetivo MSVC (`stable-x86_64-pc-windows-msvc`);
+- Visual Studio Build Tools con la carga «Desarrollo de escritorio con C++»;
+- WebView2 Runtime (ya incluido en Windows 11 y en Windows 10 actualizado).
+
+Los comandos son los mismos que en macOS: `npm install` y `npm run tauri:dev`, que arranca **Snapclone Dev**. En Windows no hay permiso de Grabación de pantalla.
+
+El reconocimiento de texto (y con él el tachado automático) usa `Windows.Media.Ocr`, que necesita el paquete de idioma con reconocimiento de texto: Configuración › Hora e idioma › Idioma y región › (tu idioma) › Opciones de idioma. Si falta, Snapclone lo avisa.
+
+Para generar el instalador: `npm run tauri build` (crea un instalador NSIS en `src-tauri/target/release/bundle/nsis/`).
+
+Qué probar a mano: captura de zona, ventana, pantalla y con scroll; copiar y pegar imágenes y texto; tachado automático; icono de la bandeja; abrir y arrastrar imágenes.
+
+El código específico de una plataforma va siempre acotado con `cfg(target_os = "...")` (o `cfg(windows)`), sin cambiar el comportamiento en macOS.
+
 ## Estructura
 
 - `src/`: frontend en TypeScript, sin framework, compilado con Vite. Hay una página por ventana: editor, selector, ajustes, HUD y scroll.

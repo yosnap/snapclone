@@ -2,6 +2,9 @@ mod app_settings;
 mod capture;
 #[cfg(target_os = "macos")]
 mod capture_below;
+#[cfg(not(target_os = "macos"))]
+#[path = "capture_below_other.rs"]
+mod capture_below;
 mod compose;
 mod crosshair;
 mod editor_window;
@@ -26,13 +29,27 @@ mod shortcuts;
 mod stitch;
 mod tray;
 mod wallpaper;
+#[cfg(windows)]
+mod webview_keys;
 
 use tauri::{DragDropEvent, Manager, RunEvent, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Relaunching while already running must bring the editor forward instead of starting a
+    // second process. macOS already gets this for free via RunEvent::Reopen, so the plugin is
+    // registered only on Windows; it must be the first plugin so it intercepts the relaunch
+    // before the rest of `setup()` runs twice.
+    #[cfg(windows)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        editor_window::show(app, false);
+    }));
+    // Tracks the most recent "copy" so a slow large one can never overwrite a faster, later one.
+    #[cfg(windows)]
+    let builder = builder.manage(export::CopyGeneration::default());
+    builder
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(capture::Captures::default())
         .manage(export::PendingSave::default())
@@ -136,6 +153,12 @@ pub fn run() {
             output::clean_exports(app.handle());
             #[cfg(target_os = "macos")]
             app.set_activation_policy(editor_window::activation_policy(editor_window::dock_hidden(app.handle())));
+            // The editor is the only window declared statically in tauri.conf.json rather than
+            // built in Rust, so it is the only one that needs this called explicitly here.
+            #[cfg(windows)]
+            if let Some(editor) = app.get_webview_window(capture::EDITOR_WINDOW) {
+                webview_keys::disable_browser_accelerator_keys(&editor);
+            }
             let registered = shortcuts::init(app.handle());
             tray::build(app.handle(), &registered)?;
             // Without it, the editor's buttons and the menu bar icon still offer every action.
@@ -149,12 +172,18 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| match event {
-            // A click on the Dock icon, or opening the app again while it runs.
+        .run(|app, event| {
+            // Unused on non-macOS, where every arm below ignores `app`.
+            let _ = &app;
+            match event {
+            // A click on the Dock icon, or opening the app again while it runs. Windows gets the
+            // equivalent via tauri-plugin-single-instance, registered above.
+            #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => editor_window::show(app, false),
             // Without a code, the last window closing asked to exit; the app lives on in the
             // menu bar. "Salir del todo" exits with a code, which is let through.
             RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
             _ => {}
+            }
         });
 }

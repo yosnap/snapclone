@@ -14,7 +14,11 @@ use tauri::{AppHandle, Manager};
 /// AppKit is asked on the main thread; this bounds the wait if that thread is busy.
 const MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Formats WebKit decodes, by file extension, with the type they are served as.
+/// Formats the editor's webview decodes directly in an `<img>`, by file extension, with the
+/// type they are served as. HEIC/HEIF/TIFF render fine in Safari/WebKit (macOS) but Chromium/
+/// WebView2 (Windows) has no built-in decoder for either — advertising them as servable there
+/// would silently show a broken image instead of `load`'s clear "not available" fallback.
+#[cfg(target_os = "macos")]
 const CONTENT_TYPES: [(&str, &str); 7] = [
     ("png", "image/png"),
     ("jpg", "image/jpeg"),
@@ -24,6 +28,9 @@ const CONTENT_TYPES: [(&str, &str); 7] = [
     ("tif", "image/tiff"),
     ("tiff", "image/tiff"),
 ];
+
+#[cfg(not(target_os = "macos"))]
+const CONTENT_TYPES: [(&str, &str); 3] = [("png", "image/png"), ("jpg", "image/jpeg"), ("jpeg", "image/jpeg")];
 
 /// Type to serve a wallpaper file as; `None` for folders (rotating or dynamic wallpapers)
 /// and formats the editor cannot draw.
@@ -91,6 +98,8 @@ pub fn current(app: &AppHandle) -> Result<Arc<Cached>, String> {
     load(&app.state::<WallpaperCache>().0, current_path(app)?)
 }
 
+// Read only by the macOS native compositor.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl Cached {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -105,12 +114,23 @@ impl Cached {
 /// The cached wallpaper if `path` is the same file, unchanged since it was read; otherwise
 /// the file is read again and replaces it.
 fn load(cache: &Mutex<Option<Arc<Cached>>>, path: PathBuf) -> Result<Arc<Cached>, String> {
-    let kind = content_type(&path).ok_or("macOS no da el fondo de escritorio como una imagen (¿es dinámico o rotativo?)")?;
+    let kind = content_type(&path);
+    #[cfg(not(target_os = "macos"))]
+    let kind = kind.or_else(|| sniffed_type(&path));
+    let kind = kind.ok_or_else(no_wallpaper_image_error)?;
     let unreadable = |error: std::io::Error| format!("no se pudo leer el fondo de escritorio: {error}");
-    let modified = std::fs::metadata(&path).and_then(|metadata| metadata.modified()).map_err(unreadable)?;
+    let metadata = std::fs::metadata(&path).map_err(unreadable)?;
+    let modified = metadata.modified().map_err(unreadable)?;
     let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(cached) = cache.as_ref().filter(|cached| cached.path == path && cached.modified == modified) {
         return Ok(cached.clone());
+    }
+    // Checked from the metadata already in hand, BEFORE reading the file: a `std::fs::read`
+    // of an oversized wallpaper would itself allocate and copy the whole thing just to then
+    // discard it.
+    #[cfg(not(target_os = "macos"))]
+    if metadata.len() > crate::import::MAX_FILE_BYTES {
+        return Err("el fondo de escritorio es demasiado grande para mostrarlo".into());
     }
     let bytes = std::fs::read(&path).map_err(unreadable)?;
     let mut hasher = DefaultHasher::new();
@@ -127,6 +147,28 @@ fn load(cache: &Mutex<Option<Arc<Cached>>>, path: PathBuf) -> Result<Arc<Cached>
     Ok(cached)
 }
 
+/// Neither "dynamic/rotating desktop" (macOS) nor "slideshow/Windows Spotlight" (Windows) give
+/// the editor a plain image file to blur, so both say so without naming either platform in the
+/// other's text.
+fn no_wallpaper_image_error() -> String {
+    if cfg!(target_os = "macos") {
+        "macOS no da el fondo de escritorio como una imagen (¿es dinámico o rotativo?)".into()
+    } else {
+        "El fondo de escritorio no está disponible como imagen (¿es una presentación o un fondo de Windows Spotlight?)".into()
+    }
+}
+
+/// Only for `TranscodedWallpaper`: Windows' own cached copy of the current wallpaper has no
+/// extension at all, so `content_type` always misses it by name — read just enough of the
+/// header to tell it is really a JPEG (which it always is here) instead of trusting the name.
+#[cfg(not(target_os = "macos"))]
+fn sniffed_type(path: &Path) -> Option<&'static str> {
+    use std::io::Read;
+    let mut header = [0u8; 3];
+    std::fs::File::open(path).ok()?.read_exact(&mut header).ok()?;
+    (header == [0xFF, 0xD8, 0xFF]).then_some("image/jpeg")
+}
+
 /// Made once per wallpaper. ImageIO reads HEIC, which the `image` crate cannot.
 fn thumbnail(cached: &Cached) -> Result<Arc<Vec<u8>>, String> {
     cached
@@ -134,20 +176,53 @@ fn thumbnail(cached: &Cached) -> Result<Arc<Vec<u8>>, String> {
         .get_or_init(|| {
             #[cfg(target_os = "macos")]
             return crate::image_io::thumbnail_png(&cached.bytes, THUMBNAIL_SIDE).map(Arc::new);
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
+            return windows_thumbnail(&cached.bytes);
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             Ok(cached.bytes.clone())
         })
         .clone()
 }
 
-/// AppKit's screen list only exists on the main thread, while `capture://` is served off it.
+/// The header is checked before any decoding, the same guard `import::prepare` uses for an
+/// untrusted local image: the wallpaper path is user-controlled state, not something this app
+/// wrote itself.
+#[cfg(target_os = "windows")]
+fn windows_thumbnail(bytes: &[u8]) -> Result<Arc<Vec<u8>>, String> {
+    const FAILED: &str = "no se pudo reducir el fondo de escritorio";
+    let (width, height) = crate::import::header_size(bytes).ok_or(FAILED)?;
+    crate::import::check_size(width, height)?;
+    let image = xcap::image::load_from_memory(bytes).map_err(|_| FAILED.to_string())?;
+    let longest = image.width().max(image.height());
+    let resized = if longest > THUMBNAIL_SIDE {
+        let scale = f64::from(THUMBNAIL_SIDE) / f64::from(longest);
+        let width = ((f64::from(image.width()) * scale).round() as u32).max(1);
+        let height = ((f64::from(image.height()) * scale).round() as u32).max(1);
+        image.resize(width, height, xcap::image::imageops::FilterType::Lanczos3)
+    } else {
+        image
+    };
+    let mut png = Vec::new();
+    resized.write_to(&mut std::io::Cursor::new(&mut png), xcap::image::ImageFormat::Png).map_err(|_| FAILED.to_string())?;
+    Ok(Arc::new(png))
+}
+
+/// On macOS AppKit's screen list only exists on the main thread; harmless but unnecessary on
+/// Windows, where `run_on_main_thread` still works fine, so it is left as is on every platform.
 fn current_path(app: &AppHandle) -> Result<PathBuf, String> {
     let (sender, receiver) = std::sync::mpsc::channel();
     app.run_on_main_thread(move || {
         let _ = sender.send(desktop_image_path());
     })
     .map_err(|error| error.to_string())?;
-    receiver.recv_timeout(MAIN_THREAD_TIMEOUT).map_err(|_| "macOS no respondió a tiempo".to_string())?
+    receiver.recv_timeout(MAIN_THREAD_TIMEOUT).map_err(|_| timeout_error())?
+}
+
+/// Same wording macOS has always used (unchanged by the Windows port, per the project's
+/// zero-behaviour-change rule there), with a Windows-specific counterpart next to it — same
+/// pattern as the sibling `no_wallpaper_image_error` below.
+fn timeout_error() -> String {
+    if cfg!(target_os = "macos") { "macOS no respondió a tiempo".into() } else { "Windows no respondió a tiempo".into() }
 }
 
 /// The first screen is the one with the menu bar, which macOS calls the main display.
@@ -165,9 +240,46 @@ fn desktop_image_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(path.to_string()))
 }
 
-#[cfg(not(target_os = "macos"))]
+/// `SystemParametersInfoW` first (the wallpaper the user actually set, a real file with a real
+/// extension); if that is missing, not a usable extension, or the call itself fails (slideshow,
+/// Spotlight, solid colour — none of which name a single static file), Windows' own rendered
+/// copy of whatever is showing, `TranscodedWallpaper`, is used instead — an extensionless JPEG,
+/// identified by `sniffed_type` in `load`, not by this function.
+#[cfg(target_os = "windows")]
 fn desktop_image_path() -> Result<PathBuf, String> {
-    Err("the desktop picture is only read on macOS".into())
+    use windows::Win32::{
+        Foundation::MAX_PATH,
+        UI::WindowsAndMessaging::{SPI_GETDESKWALLPAPER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW},
+    };
+
+    let mut buffer = [0u16; MAX_PATH as usize];
+    // SAFETY: `buffer` holds exactly `MAX_PATH` wide characters, as the API requires.
+    let result = unsafe {
+        SystemParametersInfoW(SPI_GETDESKWALLPAPER, buffer.len() as u32, Some(buffer.as_mut_ptr().cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))
+    };
+    if result.is_ok() {
+        let length = buffer.iter().position(|&unit| unit == 0).unwrap_or(buffer.len());
+        let path = PathBuf::from(String::from_utf16_lossy(&buffer[..length]));
+        // `path.is_file()`: Windows keeps pointing SPI_GETDESKWALLPAPER at this path even after
+        // the file itself is deleted or moved away — without this check, a stale path would be
+        // returned as "the" wallpaper and fail downstream instead of falling back to
+        // `TranscodedWallpaper`, which is still there since it is Windows' own rendered copy.
+        if !path.as_os_str().is_empty() && path.is_file() && content_type(&path).is_some() {
+            return Ok(path);
+        }
+    }
+    transcoded_wallpaper_path().ok_or_else(|| "Windows no da el fondo de escritorio".into())
+}
+
+#[cfg(target_os = "windows")]
+fn transcoded_wallpaper_path() -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var_os("APPDATA")?).join(r"Microsoft\Windows\Themes\TranscodedWallpaper");
+    path.is_file().then_some(path)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn desktop_image_path() -> Result<PathBuf, String> {
+    Err("the desktop picture is only read on macOS and Windows".into())
 }
 
 #[cfg(test)]
@@ -176,9 +288,22 @@ mod tests {
 
     #[test]
     fn serves_decodable_images_by_extension() {
-        assert_eq!(content_type(Path::new("/System/Library/Desktop Pictures/Sonoma.heic")), Some("image/heic"));
         assert_eq!(content_type(Path::new("/Users/x/Fondo.JPG")), Some("image/jpeg"));
         assert_eq!(content_type(Path::new("/Users/x/fondo.png")), Some("image/png"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_also_serves_heic_and_tiff() {
+        assert_eq!(content_type(Path::new("/System/Library/Desktop Pictures/Sonoma.heic")), Some("image/heic"));
+        assert_eq!(content_type(Path::new("/Users/x/fondo.tiff")), Some("image/tiff"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn heic_and_tiff_are_not_served_outside_macos() {
+        assert_eq!(content_type(Path::new("/Users/x/fondo.heic")), None, "Chromium/WebView2 cannot decode HEIC");
+        assert_eq!(content_type(Path::new("/Users/x/fondo.tiff")), None, "Chromium/WebView2 cannot decode TIFF");
     }
 
     #[test]

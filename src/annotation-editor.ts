@@ -12,6 +12,7 @@ import {
   moved,
 } from "./annotations";
 import { REDACT_MODES, type RedactCategory, type RedactMode } from "./auto-redact";
+import { IS_MAC, isPrimaryModifier, isSecondaryModifier } from "./platform";
 import type { Layout, Overlay } from "./render";
 
 export type Tool = "select" | "text" | "arrow" | "redact" | "shape";
@@ -286,12 +287,17 @@ export class AnnotationEditor {
     // Mid-drag edits would commit a stale snapshot or change the draft's kind.
     if (this.drag) return false;
     const key = event.key.toLowerCase();
-    if (event.metaKey && key === "z") {
+    if (isPrimaryModifier(event) && key === "z") {
       if (event.shiftKey) this.redo();
       else this.undo();
       return true;
     }
-    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    // Ctrl+Y: Windows' own convention for redo, alongside Ctrl+Shift+Z above.
+    if (!IS_MAC && event.ctrlKey && key === "y") {
+      this.redo();
+      return true;
+    }
+    if (isPrimaryModifier(event) || isSecondaryModifier(event) || event.altKey) return false;
     if (event.key === "Backspace" || event.key === "Delete") {
       this.deleteSelected();
       return true;
@@ -389,9 +395,10 @@ export class AnnotationEditor {
       return;
     }
 
-    // Drawing tools always draw; annotations move with the selection tool, or with ⌘ held.
+    // Drawing tools always draw; annotations move with the selection tool, or with the
+    // primary modifier held (⌘ on macOS, Ctrl on Windows).
     const hit = inside ? hitTest(this.annotations, point, geometry.scale) : undefined;
-    if (this.tool === "select" || (event.metaKey && hit)) {
+    if (this.tool === "select" || (isPrimaryModifier(event) && hit)) {
       this.selectedId = hit?.id ?? null;
       if (hit) {
         this.canvas.setPointerCapture(event.pointerId);

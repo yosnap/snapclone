@@ -161,3 +161,9 @@ button.shortcut-recorder[aria-pressed="true"] {
 .status.error {
   color: var(--error);
 }
+
+/* The Dock only exists on macOS; elsewhere "only in the tray" is already the normal behaviour. */
+body.platform-windows #dock-hidden-row,
+body.platform-other #dock-hidden-row {
+  display: none;
+}

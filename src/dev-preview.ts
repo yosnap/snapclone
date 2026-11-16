@@ -43,7 +43,7 @@ function drawSample(ctx: CanvasRenderingContext2D): void {
   ctx.fill();
   ctx.strokeStyle = "#e3e3e6";
   ctx.stroke();
-  const font = "-apple-system, BlinkMacSystemFont, sans-serif";
+  const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
   ctx.fillStyle = "#1d1d1f";
   ctx.font = `600 22px ${font}`;
   ctx.fillText("Protección", 60, 76);

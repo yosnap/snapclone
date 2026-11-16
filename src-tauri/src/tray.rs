@@ -3,6 +3,8 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Manager, Wry,
 };
+#[cfg(windows)]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 
 use crate::{
     capture::{self, CaptureAction},
@@ -22,8 +24,14 @@ const HIDE_ID: &str = "hide-app";
 const HIDE_TITLE: &str = "Ocultar Snapclone";
 const QUIT_ID: &str = "quit";
 const QUIT_TITLE: &str = "Salir del todo";
-/// Only a label in the menu bar icon: the editor's page handles ⇧⌘Z, where it is also redo.
+/// Only a label in the menu bar icon: the editor's page handles the real shortcut, where it
+/// is also redo. `Cmd`/`Shift+Cmd+Z` on Windows is not just wrong text — `muda` (the native
+/// menu backend) refuses to parse `Cmd` as a Windows accelerator at all and panics the whole
+/// app in `setup()`, so this absolutely must be gated, not just relabelled.
+#[cfg(target_os = "macos")]
 const REOPEN_LABEL: &str = "Shift+Cmd+Z";
+#[cfg(not(target_os = "macos"))]
+const REOPEN_LABEL: &str = "Ctrl+Shift+Z";
 
 /// The capture entries, in `CaptureAction::ALL` order like the shortcut list, kept so their
 /// shortcuts can be updated when they change.
@@ -44,7 +52,10 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
     let text_menu = Submenu::with_items(app, "Texto detectado", true, &[&copy_text_item])?;
     let open_item = MenuItem::with_id(app, "open", "Abrir Snapclone", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, SETTINGS_ID, "Ajustes…", true, None::<&str>)?;
-    let hide_item = MenuItem::with_id(app, HIDE_ID, HIDE_TITLE, true, Some("Cmd+Q"))?;
+    // Same reason as `REOPEN_LABEL`: `muda` panics on a `Cmd` accelerator on Windows, so there
+    // is none there — the tray menu has no native accelerator concept to show it with anyway.
+    let hide_accelerator = if cfg!(target_os = "macos") { Some("Cmd+Q") } else { None };
+    let hide_item = MenuItem::with_id(app, HIDE_ID, HIDE_TITLE, true, hide_accelerator)?;
     let quit_item = MenuItem::with_id(app, QUIT_ID, QUIT_TITLE, true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
 
@@ -56,12 +67,22 @@ pub fn build(app: &AppHandle, shortcuts: &[ShortcutEntry]) -> tauri::Result<()> 
     app.manage(CaptureItems(captures));
     show_shortcuts(app, shortcuts);
 
+    // macOS convention: left click opens the menu. Windows' is the opposite — left click
+    // brings the app forward, right click (always available) opens the menu.
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Snapclone")
         .menu(&menu)
-        .show_menu_on_left_click(true);
+        .show_menu_on_left_click(cfg!(target_os = "macos"));
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
+    }
+    #[cfg(windows)]
+    {
+        tray = tray.on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                editor_window::show(tray.app_handle(), false);
+            }
+        });
     }
     tray.build(app)?;
     Ok(())

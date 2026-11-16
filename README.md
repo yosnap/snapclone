@@ -31,6 +31,7 @@ Todos los datos que aparecen son inventados.
 
 - macOS 13 (Ventura) o posterior, en Apple Silicon o Intel.
 - Permiso de **Grabación de pantalla** (Ajustes del Sistema → Privacidad y seguridad). Snapclone lo pide la primera vez que haces una captura.
+- Windows 10 u 11 (64 bits), en fase de pruebas: para compilarlo, consulta [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Instalación
 

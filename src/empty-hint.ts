@@ -1,6 +1,10 @@
+import { IS_MAC } from "./platform";
 import type { ShortcutEntry } from "./shortcut-settings";
 
-const NO_SHORTCUT = "La captura de zona no tiene atajo: usa el botón o el icono de la barra de menús.";
+/** Where the tray icon lives: the macOS menu bar, or Windows' notification area tray. */
+const TRAY_LOCATION = IS_MAC ? "la barra de menús" : "la bandeja del sistema";
+
+const NO_SHORTCUT = `La captura de zona no tiene atajo: usa el botón o el icono de ${TRAY_LOCATION}.`;
 
 function kbd(text: string): HTMLElement {
   const key = document.createElement("kbd");
@@ -19,12 +23,12 @@ export function showZoneShortcuts(hint: HTMLElement, entries: ShortcutEntry[]): 
       kbd(open),
       " para capturar y editar, o ",
       kbd(copy),
-      " para capturar y copiar. También puedes usar el icono de la barra de menús.",
+      ` para capturar y copiar. También puedes usar el icono de ${TRAY_LOCATION}.`,
     );
   } else if (open) {
-    hint.replaceChildren("Pulsa ", kbd(open), " o usa el icono de la barra de menús.");
+    hint.replaceChildren("Pulsa ", kbd(open), ` o usa el icono de ${TRAY_LOCATION}.`);
   } else if (copy) {
-    hint.replaceChildren("Pulsa ", kbd(copy), " para capturar y copiar, o usa el icono de la barra de menús.");
+    hint.replaceChildren("Pulsa ", kbd(copy), ` para capturar y copiar, o usa el icono de ${TRAY_LOCATION}.`);
   } else {
     hint.textContent = NO_SHORTCUT;
   }

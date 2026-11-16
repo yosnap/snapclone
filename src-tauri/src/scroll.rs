@@ -10,11 +10,12 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+#[cfg(target_os = "macos")]
+use std::sync::mpsc;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
@@ -51,8 +52,13 @@ struct Session {
     id: u64,
     stop: Arc<AtomicBool>,
     worker: JoinHandle<Result<Stitcher, String>>,
-    /// Zone width in points, to work out the pixels per point of the result.
+    /// Zone width in points, to work out the pixels per point of the result on macOS.
     zone_width: u32,
+    /// Image pixels per CSS point of the zone's monitor — the same value `finish_scroll` needs
+    /// as the result's scale, already computed once by the selector. Used directly on Windows
+    /// (see the comment on `finish_scroll`); kept for parity even though macOS still recomputes
+    /// its own from `zone_width`.
+    scale: f64,
 }
 
 /// Where to capture: a zone in points relative to its monitor, plus every monitor's global
@@ -61,6 +67,10 @@ pub struct Target {
     pub monitor: Rect,
     pub zone: Rect,
     pub others: Vec<Rect>,
+    /// Image pixels per CSS point of the zone's monitor (`MonitorShot::scale`) — needed on
+    /// Windows to convert `EDGE`/`TOOLBAR_*` (CSS-point-equivalent constants) into the physical
+    /// pixels `framed`/`toolbar` are built in, and to record the scroll capture's own scale.
+    pub scale: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -84,10 +94,12 @@ struct Progress {
 /// Opens the frame and the toolbar and starts capturing. On error nothing is left open and
 /// the caller still owns `in_progress`; on success this module releases it when done.
 pub fn begin(app: &AppHandle, target: Target) -> Result<(), String> {
-    let Target { monitor, zone, others } = target;
+    let Target { monitor, zone, others, scale } = target;
     let global = Rect::new(monitor.x + zone.x, monitor.y + zone.y, zone.width, zone.height);
-    let framed = Rect::new(global.x - EDGE as i32, global.y - EDGE as i32, global.width + EDGE * 2, global.height + EDGE * 2);
-    let toolbar = geometry::toolbar_position(framed, monitor, &others, TOOLBAR_WIDTH, TOOLBAR_HEIGHT, TOOLBAR_GAP);
+    let edge = native_units(EDGE, scale);
+    let framed = Rect::new(global.x - edge as i32, global.y - edge as i32, global.width + edge * 2, global.height + edge * 2);
+    let toolbar_size = (native_units(TOOLBAR_WIDTH, scale), native_units(TOOLBAR_HEIGHT, scale), native_units(TOOLBAR_GAP, scale));
+    let toolbar = geometry::toolbar_position(framed, monitor, &others, toolbar_size.0, toolbar_size.1, toolbar_size.2);
     let below = match open_windows(app, framed, toolbar) {
         Ok(window_number) => window_number,
         Err(error) => {
@@ -112,25 +124,54 @@ pub fn begin(app: &AppHandle, target: Target) -> Result<(), String> {
             result
         }
     });
-    *session = Some(Session { id, stop, worker, zone_width: zone.width });
+    *session = Some(Session { id, stop, worker, zone_width: zone.width, scale });
     Ok(())
+}
+
+/// `value` is a CSS-point-equivalent constant (`EDGE`, `TOOLBAR_*`). On macOS it is used as-is:
+/// the builder positions `FRAME_WINDOW`/`TOOLBAR_WINDOW` with the logical methods, which convert
+/// points to physical pixels itself. On Windows `framed`/`toolbar` are built directly in
+/// physical pixels (`place_physical`), so `value` must be scaled by the zone's monitor DPI first
+/// — otherwise a "2-point" border/a "460-point" toolbar would occupy far fewer physical pixels
+/// than the page's own CSS (which WebView2 DOES scale by the real DPI) draws them at: at 150%
+/// the frame's 2px CSS border alone renders 1px wider than the window's own margin, so it bleeds
+/// into the captured zone, and the toolbar's content is cramped into 2/3 of its design size.
+fn native_units(value: u32, scale: f64) -> u32 {
+    if cfg!(windows) { ((f64::from(value) * scale).round() as u32).max(1) } else { value }
 }
 
 /// Opens the frame and the toolbar without focusing either, and returns the frame's window
 /// number: frames are captured below it.
 fn open_windows(app: &AppHandle, framed: Rect, toolbar: Rect) -> Result<u32, String> {
     let frame = builder(app, FRAME_WINDOW, framed).transparent(true).build().map_err(|error| error.to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    crate::selector::place_physical(&frame, framed.x, framed.y, framed.width, framed.height).map_err(|error| error.to_string())?;
     frame.set_ignore_cursor_events(true).map_err(|error| error.to_string())?;
     // A click on a button still works without the toolbar ever becoming the key window.
     let bar = builder(app, TOOLBAR_WINDOW, toolbar).accept_first_mouse(true).build().map_err(|error| error.to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    crate::selector::place_physical(&bar, toolbar.x, toolbar.y, toolbar.width, toolbar.height).map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    for window in [&frame, &bar] {
+        crate::webview_keys::disable_browser_accelerator_keys(window);
+    }
     arrange(app, frame, bar)
 }
 
+/// `rect` is this window's native-unit geometry (points on macOS, physical pixels on Windows
+/// — see the HiDPI note in the port plan). On macOS the logical builder methods below position
+/// it directly, exactly as before. On Windows they are skipped — `open_windows` repositions
+/// the built window in physical pixels instead via `selector::place_physical`, which bypasses
+/// logical/DPI conversion entirely (needed because per-monitor DPI does not compose into one
+/// logical space across monitors); the window stays hidden (`focused(false)`, never shown
+/// before that call) so nothing flashes at the wrong spot in between.
 fn builder<'a>(app: &'a AppHandle, label: &str, rect: Rect) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
-    WebviewWindowBuilder::new(app, label, WebviewUrl::App(PAGE.into()))
+    // Only read on macOS, where the builder positions the window directly; `open_windows`
+    // repositions it afterwards on every other platform.
+    let _ = rect;
+    #[allow(unused_mut)]
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(PAGE.into()))
         .title("Snapclone")
-        .position(f64::from(rect.x), f64::from(rect.y))
-        .inner_size(f64::from(rect.width), f64::from(rect.height))
         .decorations(false)
         .resizable(false)
         .shadow(false)
@@ -138,7 +179,12 @@ fn builder<'a>(app: &'a AppHandle, label: &str, rect: Rect) -> WebviewWindowBuil
         .skip_taskbar(true)
         .visible_on_all_workspaces(true)
         .focused(false)
-        .focusable(false)
+        .focusable(false);
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.position(f64::from(rect.x), f64::from(rect.y)).inner_size(f64::from(rect.width), f64::from(rect.height));
+    }
+    builder
 }
 
 /// Puts the frame above every app's windows and the toolbar above the frame, so capturing
@@ -169,9 +215,19 @@ fn arrange(app: &AppHandle, frame: WebviewWindow, toolbar: WebviewWindow) -> Res
     receiver.recv().map_err(|error| error.to_string())?
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Phase 2 spike (step 1a): the frame sits `EDGE` px outside the zone and the toolbar beside
+/// it, never over it, so a plain region capture below already leaves both out in the common
+/// case — no window-level content-protection trick needed here, unlike macOS's window levels.
+/// `below` has no Windows equivalent (see `capture_below_other::capture`), so `0` is returned
+/// and ignored by the caller.
+#[cfg(target_os = "windows")]
 fn arrange(_app: &AppHandle, _frame: WebviewWindow, _toolbar: WebviewWindow) -> Result<u32, String> {
-    Err("scroll capture is only available on macOS".into())
+    Ok(0)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn arrange(_app: &AppHandle, _frame: WebviewWindow, _toolbar: WebviewWindow) -> Result<u32, String> {
+    Err("scroll capture is only available on macOS and Windows".into())
 }
 
 fn close_windows(app: &AppHandle) {
@@ -261,7 +317,12 @@ pub async fn finish_scroll(app: AppHandle) -> Result<(), String> {
             .map_err(|error| error.to_string())?
             .map_err(|_| "the scroll capture stopped unexpectedly".to_string())??;
         let image = stitcher.into_image();
-        let scale = f64::from(image.width()) / f64::from(session.zone_width.max(1));
+        // On Windows `zone_width` is already physical pixels (post-HiDPI-redesign), so the
+        // pixels-per-point ratio below would come out ~1.0 regardless of the real DPI — use the
+        // scale the selector already computed for this monitor instead. macOS keeps the ratio
+        // unchanged, since there `zone_width` is genuinely in points.
+        let scale =
+            if cfg!(windows) { session.scale } else { f64::from(image.width()) / f64::from(session.zone_width.max(1)) };
         capture::store_image(&app, image, scale).await
     }
     .await;

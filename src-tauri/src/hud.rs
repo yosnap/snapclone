@@ -45,9 +45,9 @@ pub fn show_copied(app: &AppHandle) {
 }
 
 fn open(app: &AppHandle, label: &str) -> Result<WebviewWindow, String> {
-    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(PAGE.into()))
+    #[allow(unused_mut)]
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(PAGE.into()))
         .title("Snapclone")
-        .inner_size(f64::from(SIZE), f64::from(SIZE))
         .decorations(false)
         .resizable(false)
         .shadow(false)
@@ -58,18 +58,41 @@ fn open(app: &AppHandle, label: &str) -> Result<WebviewWindow, String> {
         .visible_on_all_workspaces(true)
         .focused(false)
         .focusable(false);
-    let builder = match placement(app) {
-        Some(spot) => builder.position(f64::from(spot.x), f64::from(spot.y)),
-        None => builder.center(),
-    };
+    let spot = placement(app);
+    // An explicit `spot` is in physical pixels on Windows (see `placement`) and is applied
+    // after `build()` via `selector::place_physical`, which bypasses logical/DPI conversion
+    // entirely — needed because per-monitor DPI does not compose into one logical space
+    // across monitors. Without a spot, or on macOS, the logical builder methods below are
+    // used as before: Tauri computes their physical equivalent itself from whichever single
+    // monitor the window actually lands on, which has none of that composition problem.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.inner_size(f64::from(SIZE), f64::from(SIZE));
+        builder = match spot {
+            Some(spot) => builder.position(f64::from(spot.x), f64::from(spot.y)),
+            None => builder.center(),
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    if spot.is_none() {
+        builder = builder.inner_size(f64::from(SIZE), f64::from(SIZE)).center();
+    }
     let window = builder.build().map_err(|error| error.to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    if let Some(spot) = spot {
+        crate::selector::place_physical(&window, spot.x, spot.y, spot.width, spot.height).map_err(|error| error.to_string())?;
+    }
     window.set_ignore_cursor_events(true).map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    crate::webview_keys::disable_browser_accelerator_keys(&window);
     raise(app, window.clone());
     Ok(window)
 }
 
-/// The spot in the lower third of the monitor under the pointer, in global points like the
-/// pointer. `None` when the pointer or the monitors cannot be read.
+/// The spot in the lower third of the monitor under the pointer: global points on macOS, like
+/// `screen::pointer_location`; physical pixels on Windows, also like it. `None` when the
+/// pointer or the monitors cannot be read.
+#[cfg(target_os = "macos")]
 fn placement(app: &AppHandle) -> Option<Rect> {
     let (x, y) = screen::pointer_location()?;
     let areas: Vec<(Rect, Rect)> = app
@@ -103,6 +126,28 @@ fn placement(app: &AppHandle) -> Option<Rect> {
     };
     let (_, work) = areas.iter().find(|(full, _)| contains(full)).or_else(|| areas.first())?;
     Some(geometry::bezel(*work, SIZE))
+}
+
+/// Windows version: works in physical pixels throughout (`monitor_at`, not a per-monitor
+/// "points" conversion), so two monitors at different DPI never produce overlapping or gapped
+/// coordinates — see the Phase 1 HiDPI note in the Windows port plan.
+#[cfg(not(target_os = "macos"))]
+fn placement(app: &AppHandle) -> Option<Rect> {
+    let (x, y) = screen::pointer_location()?;
+    let monitors = app.available_monitors().ok()?;
+    let full: Vec<Rect> = monitors
+        .iter()
+        .map(|monitor| {
+            let (position, size) = (monitor.position(), monitor.size());
+            Rect::new(position.x, position.y, size.width, size.height)
+        })
+        .collect();
+    let index = geometry::monitor_at((x, y), &full).unwrap_or(0);
+    let monitor = monitors.get(index)?;
+    let work = monitor.work_area();
+    let work_rect = Rect::new(work.position.x, work.position.y, work.size.width, work.size.height);
+    let physical_size = (f64::from(SIZE) * monitor.scale_factor()).round() as u32;
+    Some(geometry::bezel(work_rect, physical_size))
 }
 
 /// "Always on top" is the floating level, which the menu bar, the Dock and full-screen

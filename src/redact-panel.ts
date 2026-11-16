@@ -1,4 +1,5 @@
 import { REDACT_CATEGORIES, type RedactCategory, type RedactMode, type RedactSettings } from "./auto-redact";
+import { IS_MAC } from "./platform";
 import { closePopover, isOpenFor, openPopover } from "./popover";
 
 export type RedactPreferences = { enabled: boolean; mode: RedactMode; categories: RedactSettings };
@@ -81,7 +82,9 @@ function settingsPanel(preferences: RedactPreferences, handlers: RedactHandlers)
 
   const note = document.createElement("p");
   note.className = "popover-caption";
-  note.textContent = "El texto se detecta en tu Mac con el framework Vision de Apple: la captura no sale del equipo.";
+  note.textContent = IS_MAC
+    ? "El texto se detecta en tu Mac con el framework Vision de Apple: la captura no sale del equipo."
+    : "El texto se detecta en tu equipo con el OCR de Windows: la captura no sale del equipo.";
   panel.append(note);
   return panel;
 }

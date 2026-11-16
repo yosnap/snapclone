@@ -30,6 +30,18 @@
   white-space: nowrap;
 }
 
+/* The shortcut sits in its own span; this keeps the one-space gap a single text node had. */
+#copy-button,
+#save-button {
+  gap: 0;
+}
+
+#copy-shortcut::before,
+#save-shortcut::before {
+  content: " ";
+  white-space: pre;
+}
+
 .bar-button:hover:not(:disabled) {
   background: var(--control-hover);
 }

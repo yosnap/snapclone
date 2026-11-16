@@ -2,6 +2,8 @@
 //! would export (no annotations, no selection), without going through the webview. It
 //! follows the editor's renderer rule by rule; the geometry, the style parsing and the
 //! balance analysis are pure and tested, the drawing goes through CoreGraphics.
+// Only macOS draws with it; the pure parts still compile (and are tested) everywhere.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
 
 mod balance;
 #[cfg(target_os = "macos")]

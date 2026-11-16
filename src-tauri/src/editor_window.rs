@@ -67,6 +67,7 @@ pub fn is_visible(app: &AppHandle) -> bool {
 /// capture opens. This unhides it without activating it, which keeps the capture invariant
 /// (nothing activates Snapclone before the shot); queued on the main thread after any hide
 /// requested before it, so a hidden editor stays out of the shot.
+#[allow(unused_variables)]
 pub fn unhide_without_activation(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     if let Err(error) = app.run_on_main_thread(|| {

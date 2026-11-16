@@ -146,7 +146,9 @@ impl CaptureAction {
 }
 
 impl CaptureKind {
-    /// Arguments for `screencapture` when the own capture is unavailable.
+    /// Arguments for `screencapture` when the own capture is unavailable (macOS only — see
+    /// `run_screencapture`).
+    #[cfg(target_os = "macos")]
     fn fallback_args(self) -> &'static [&'static str] {
         // -x: no sound; -o: no window shadow, the editor draws its own.
         match self {
@@ -221,6 +223,8 @@ pub fn start_capture(app: AppHandle, action: Option<CaptureAction>) {
     start(app, action.unwrap_or(CaptureAction::Region));
 }
 
+// Off macOS every arm returns and nothing follows the match, so those `return`s are redundant there.
+#[cfg_attr(not(target_os = "macos"), allow(clippy::needless_return))]
 async fn run_capture(app: AppHandle, action: CaptureAction) {
     let captures = app.state::<Captures>();
     if captures.in_progress.swap(true, Ordering::SeqCst) {
@@ -285,23 +289,39 @@ async fn run_capture(app: AppHandle, action: CaptureAction) {
             capture_ended(&app);
             return;
         }
+        // No system fallback exists on Windows (YAGNI: `xcap` is already the same primary
+        // path on both platforms; macOS's `screencapture` fallback below exists for a
+        // permission edge case `xcap` can hit there, with no documented Windows equivalent).
+        // Report `xcap`'s own error instead of silently trying to spawn a binary that is not
+        // there, which would otherwise surface as a confusing OS "file not found" error.
+        #[cfg(not(target_os = "macos"))]
+        Err(error) => {
+            report_failure(&app, &format!("No se pudo capturar la pantalla: {error}"));
+            capture_ended(&app);
+            return;
+        }
+        #[cfg(target_os = "macos")]
         Err(error) => eprintln!("own capture unavailable, using screencapture: {error}"),
     }
 
-    let result = match capture_dir(&app) {
-        Ok(dir) => run_screencapture(&dir, kind.fallback_args()).await,
-        Err(error) => Err(error),
-    };
-    match result {
-        Ok(Some((id, path))) => {
-            let scale = std::fs::read(&path).map_or(1.0, |bytes| png_scale(&bytes));
-            app_settings::play_capture_sound(&app);
-            deliver(&app, id, path, scale);
+    // Only ever reached on macOS: every non-macOS arm of the match above already returned.
+    #[cfg(target_os = "macos")]
+    {
+        let result = match capture_dir(&app) {
+            Ok(dir) => run_screencapture(&dir, kind.fallback_args()).await,
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(Some((id, path))) => {
+                let scale = std::fs::read(&path).map_or(1.0, |bytes| png_scale(&bytes));
+                app_settings::play_capture_sound(&app);
+                deliver(&app, id, path, scale);
+            }
+            Ok(None) => {}
+            Err(error) => report_failure(&app, &error),
         }
-        Ok(None) => {}
-        Err(error) => report_failure(&app, &error),
+        capture_ended(&app);
     }
-    capture_ended(&app);
 }
 
 /// Brings the editor back with the error in its status line, so a failed capture is never
@@ -477,7 +497,9 @@ async fn write_capture(app: &AppHandle, image: RgbaImage) -> Result<(String, Pat
 }
 
 /// Runs the system capture tool, the fallback when the own capture cannot read the screens.
-/// Returns `None` when the user cancels with Esc.
+/// Returns `None` when the user cancels with Esc. macOS only — see the Windows port plan's
+/// decision not to build an equivalent fallback there (YAGNI, no documented need for one).
+#[cfg(target_os = "macos")]
 async fn run_screencapture(dir: &Path, args: &[&str]) -> Result<Option<(String, PathBuf)>, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let path = dir.join(format!("{id}.png"));

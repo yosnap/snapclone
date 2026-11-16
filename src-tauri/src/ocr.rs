@@ -132,12 +132,14 @@ pub async fn analyze(app: &AppHandle, id: &str) -> Result<Arc<Analysis>, String>
 }
 
 /// Side of the blank image that warms Vision up; any image loads the recognizer.
+#[cfg(target_os = "macos")]
 const WARM_UP_SIDE: u32 = 64;
 
 /// Loads Vision's text recognizer in the background at launch. macOS caches it per
 /// executable, so the first recognition after installing or updating the app takes about
 /// 30 s, and later ones a fraction of a second. Without this, that first one was the
 /// automatic redaction of a "Capturar zona y copiar", which copied half a minute late.
+#[cfg(target_os = "macos")]
 pub fn warm_up(app: &AppHandle) {
     let Ok(dir) = app.path().app_cache_dir() else { return };
     tauri::async_runtime::spawn_blocking(move || {
@@ -153,6 +155,10 @@ pub fn warm_up(app: &AppHandle) {
         }
     });
 }
+
+/// Windows OCR has no first-run cost to hide, so nothing is warmed up there.
+#[cfg(not(target_os = "macos"))]
+pub fn warm_up(_app: &AppHandle) {}
 
 /// Drops a deleted capture's analysis.
 pub fn forget(app: &AppHandle, id: &str) {
@@ -304,10 +310,334 @@ mod vision {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+mod vision {
+    use std::{ops::Range, path::Path};
+
+    use windows::{
+        Foundation::Rect,
+        Graphics::Imaging::{
+            BitmapAlphaMode, BitmapBounds, BitmapDecoder, BitmapInterpolationMode, BitmapPixelFormat, BitmapTransform,
+            ColorManagementMode, ExifOrientationMode, SoftwareBitmap,
+        },
+        Media::Ocr::OcrEngine,
+        Storage::Streams::{DataWriter, InMemoryRandomAccessStream},
+    };
+
+    use super::{NormalizedRect, Recognized, TextLine};
+    use crate::redact::{Category, SensitiveRegion, find_sensitive};
+
+    /// No real line of text is this tall, even in a HiDPI capture — the overlap between bands
+    /// must comfortably exceed it, so a line split by a seam is always whole in the neighbour.
+    const BAND_OVERLAP: u32 = 512;
+
+    /// A slice of the long axis, plus the sub-range it alone owns (see `keep_line`).
+    struct Band {
+        start: u32,
+        end: u32,
+        core_start: u32,
+        core_end: u32,
+    }
+
+    /// Splits `[0, total)` into bands of at most `max`, each overlapping its neighbours by
+    /// `overlap`. The cores tile `[0, total)` with no gaps and no double coverage.
+    fn bands(total: u32, max: u32, overlap: u32) -> Vec<Band> {
+        if total <= max {
+            return vec![Band { start: 0, end: total, core_start: 0, core_end: total }];
+        }
+        let half = overlap / 2;
+        let step = max - overlap;
+        let mut result = Vec::new();
+        let mut start = 0u32;
+        loop {
+            let end = (start + max).min(total);
+            let core_start = if start == 0 { 0 } else { start + half };
+            let core_end = if end == total { total } else { end - half };
+            result.push(Band { start, end, core_start, core_end });
+            if end == total {
+                break;
+            }
+            start += step;
+        }
+        result
+    }
+
+    /// Whether a line (`top`/`bottom` in full-image coordinates) belongs to `band`: its centre
+    /// must fall in the band's own core, and it must not touch a seam shared with a neighbour —
+    /// such a line is a fragment, read wrong, so only the neighbour that has it whole keeps it.
+    fn keep_line(band: &Band, top: u32, bottom: u32, total: u32) -> bool {
+        let center = (top + bottom) / 2;
+        let in_core = center >= band.core_start && center < band.core_end;
+        let touches_top_seam = band.start > 0 && top <= band.start;
+        let touches_bottom_seam = band.end < total && bottom >= band.end;
+        in_core && !touches_top_seam && !touches_bottom_seam
+    }
+
+    fn ocr_error(error: windows::core::Error) -> String {
+        eprintln!("Windows OCR failed: {error}");
+        "No se pudo leer el texto de la captura".into()
+    }
+
+    /// Decodes the PNG fresh from its bytes. Cheap relative to the OCR pass itself, and simpler
+    /// than reusing one decoder across several crops with uncertain statefulness.
+    fn decode(png: &[u8]) -> Result<BitmapDecoder, String> {
+        let stream = InMemoryRandomAccessStream::new().map_err(ocr_error)?;
+        let writer = DataWriter::CreateDataWriter(&stream).map_err(ocr_error)?;
+        writer.WriteBytes(png).map_err(ocr_error)?;
+        writer.StoreAsync().map_err(ocr_error)?.join().map_err(ocr_error)?;
+        stream.Seek(0).map_err(ocr_error)?;
+        BitmapDecoder::CreateAsync(&stream).map_err(ocr_error)?.join().map_err(ocr_error)
+    }
+
+    /// `bounds` crops; `scaled`, when given, additionally resizes that crop (used only for the
+    /// whole-image rescale, never together with banding — see `recognize`).
+    fn software_bitmap(decoder: &BitmapDecoder, bounds: BitmapBounds, scaled: Option<(u32, u32)>) -> Result<SoftwareBitmap, String> {
+        let transform = BitmapTransform::new().map_err(ocr_error)?;
+        transform.SetBounds(bounds).map_err(ocr_error)?;
+        if let Some((width, height)) = scaled {
+            transform.SetScaledWidth(width).map_err(ocr_error)?;
+            transform.SetScaledHeight(height).map_err(ocr_error)?;
+            transform.SetInterpolationMode(BitmapInterpolationMode::Fant).map_err(ocr_error)?;
+        }
+        decoder
+            .GetSoftwareBitmapTransformedAsync(
+                BitmapPixelFormat::Bgra8,
+                BitmapAlphaMode::Premultiplied,
+                &transform,
+                ExifOrientationMode::IgnoreExifOrientation,
+                ColorManagementMode::DoNotColorManage,
+            )
+            .map_err(ocr_error)?
+            .join()
+            .map_err(ocr_error)
+    }
+
+    /// One recognized line: text reconstructed from its words (joined with spaces — the same
+    /// string `OcrLine.Text()` gives for Latin text), its union box, and the union box of the
+    /// words overlapping each sensitive match. Everything here is in the bitmap that was
+    /// actually analyzed (a crop, and/or a rescale), never the full image yet.
+    struct Line {
+        text: String,
+        rect: Rect,
+        sensitive: Vec<(Category, Rect)>,
+    }
+
+    fn union_rects(mut rects: impl Iterator<Item = Rect>) -> Option<Rect> {
+        let first = rects.next()?;
+        let (mut min_x, mut min_y) = (first.X, first.Y);
+        let (mut max_x, mut max_y) = (first.X + first.Width, first.Y + first.Height);
+        for rect in rects {
+            min_x = min_x.min(rect.X);
+            min_y = min_y.min(rect.Y);
+            max_x = max_x.max(rect.X + rect.Width);
+            max_y = max_y.max(rect.Y + rect.Height);
+        }
+        Some(Rect { X: min_x, Y: min_y, Width: max_x - min_x, Height: max_y - min_y })
+    }
+
+    fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
+        a.start < b.end && b.start < a.end
+    }
+
+    /// `words` is never empty — `ocr_lines` only calls this for lines that have at least one.
+    fn process_line(words: &[(String, Rect)]) -> Line {
+        let mut text = String::new();
+        let mut ranges = Vec::with_capacity(words.len());
+        for (word, _) in words {
+            let start = text.len();
+            text.push_str(word);
+            ranges.push(start..text.len());
+            text.push(' ');
+        }
+        text.pop();
+        let rect = union_rects(words.iter().map(|(_, rect)| *rect)).expect("words is not empty");
+        let sensitive = find_sensitive(&text)
+            .into_iter()
+            .filter_map(|(category, matched)| {
+                let overlapping = words.iter().zip(&ranges).filter(|(_, range)| ranges_overlap(range, &matched)).map(|(&(_, rect), _)| rect);
+                union_rects(overlapping).map(|rect| (category, rect))
+            })
+            .collect();
+        Line { text, rect, sensitive }
+    }
+
+    /// Runs OCR on one already-cropped/rescaled bitmap and reconstructs its lines.
+    fn ocr_lines(engine: &OcrEngine, bitmap: &SoftwareBitmap) -> Result<Vec<Line>, String> {
+        let result = engine.RecognizeAsync(bitmap).map_err(ocr_error)?.join().map_err(ocr_error)?;
+        let mut lines = Vec::new();
+        for line in &result.Lines().map_err(ocr_error)? {
+            let mut words = Vec::new();
+            for word in &line.Words().map_err(ocr_error)? {
+                words.push((word.Text().map_err(ocr_error)?.to_string(), word.BoundingRect().map_err(ocr_error)?));
+            }
+            if !words.is_empty() {
+                lines.push(process_line(&words));
+            }
+        }
+        Ok(lines)
+    }
+
+    /// Converts one already-accepted `Line` (bitmap-local pixel coordinates) into the capture's
+    /// normalized ones: `offset_*` places a band's crop back in the full image (0 outside
+    /// banding); `denom_*` is the pixel size that `rect` is relative to (the full image for a
+    /// band — crops never rescale — or the analyzed bitmap's own size otherwise).
+    fn push_line(recognized: &mut Recognized, line: Line, offset_x: f64, offset_y: f64, denom_width: f64, denom_height: f64) {
+        let normalize = |rect: Rect| NormalizedRect {
+            x: (f64::from(rect.X) + offset_x) / denom_width,
+            y: (f64::from(rect.Y) + offset_y) / denom_height,
+            width: f64::from(rect.Width) / denom_width,
+            height: f64::from(rect.Height) / denom_height,
+        };
+        for (category, rect) in line.sensitive {
+            recognized.sensitive.push(SensitiveRegion::new(category, normalize(rect)));
+        }
+        let rect = normalize(line.rect);
+        recognized.lines.push(TextLine { text: line.text, rect });
+    }
+
+    pub fn recognize(path: &Path) -> Result<Recognized, String> {
+        let png = std::fs::read(path).map_err(|error| format!("No se pudo leer la captura: {error}"))?;
+        // `TryCreateFromUserProfileLanguages` returns this exact sentinel error (a null engine
+        // pointer with no real HRESULT, confirmed by reading `windows-core`'s `Type::from_abi`)
+        // specifically when no OCR language pack is installed. Any OTHER error — COM not
+        // initialized, RPC failure, etc. — is a real failure and must not be masked by that
+        // message, or a genuine bug would always look like a missing language pack.
+        let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|error| {
+            if error == windows::core::Error::empty() {
+                "Windows no tiene instalado el reconocimiento de texto para tu idioma. Añádelo en \
+                 Configuración › Hora e idioma › Idioma y región › (tu idioma) › Opciones de idioma."
+                    .to_string()
+            } else {
+                ocr_error(error)
+            }
+        })?;
+        let max = OcrEngine::MaxImageDimension().map_err(ocr_error)?;
+
+        let decoder = decode(&png)?;
+        let width = decoder.PixelWidth().map_err(ocr_error)?;
+        let height = decoder.PixelHeight().map_err(ocr_error)?;
+        let long = width.max(height);
+        let short = width.min(height);
+
+        let mut recognized = Recognized { lines: Vec::new(), sensitive: Vec::new() };
+        // Banding only preserves whole lines when the split runs along height: a line's height
+        // is bounded by its font size, comfortably inside `BAND_OVERLAP`, but its WIDTH is not —
+        // a long sentence, or a card number, could straddle a vertical seam with neither half
+        // recognized whole, which would silently defeat auto-redaction (a real security gap,
+        // not just a quality one). So a wide image (width the long side) is always rescaled,
+        // same as "both sides too large" below, even though that costs some small-text legibility.
+        let along_width = width >= height;
+        if long <= max || short > max || along_width {
+            let scaled = (long > max).then(|| {
+                let scale = f64::from(max) / f64::from(long);
+                (((f64::from(width) * scale).round() as u32).max(1), ((f64::from(height) * scale).round() as u32).max(1))
+            });
+            let (analyzed_width, analyzed_height) = scaled.unwrap_or((width, height));
+            let bounds = BitmapBounds { X: 0, Y: 0, Width: width, Height: height };
+            let bitmap = software_bitmap(&decoder, bounds, scaled)?;
+            for line in ocr_lines(&engine, &bitmap)? {
+                push_line(&mut recognized, line, 0.0, 0.0, f64::from(analyzed_width), f64::from(analyzed_height));
+            }
+        } else {
+            // Only height (the long side) is too large: band across it, full width, never
+            // rescaled, so small text stays legible (see Key Insights in the plan).
+            for band in bands(long, max, BAND_OVERLAP) {
+                let bounds = BitmapBounds { X: 0, Y: band.start, Width: width, Height: band.end - band.start };
+                let bitmap = software_bitmap(&decode(&png)?, bounds, None)?;
+                for line in ocr_lines(&engine, &bitmap)? {
+                    let top = band.start + line.rect.Y.round().max(0.0) as u32;
+                    let bottom = band.start + (line.rect.Y + line.rect.Height).round().max(0.0) as u32;
+                    if !keep_line(&band, top, bottom, long) {
+                        continue;
+                    }
+                    push_line(&mut recognized, line, 0.0, f64::from(band.start), f64::from(width), f64::from(height));
+                }
+            }
+        }
+        Ok(recognized)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn tiles_without_gaps_or_overlaps(total: u32, max: u32, overlap: u32) {
+            let bands = bands(total, max, overlap);
+            assert_eq!(bands[0].core_start, 0, "first core starts at 0 ({total}, {max})");
+            assert_eq!(bands.last().unwrap().core_end, total, "last core ends at total ({total}, {max})");
+            for pair in bands.windows(2) {
+                assert_eq!(pair[0].core_end, pair[1].core_start, "cores tile with no gap or overlap ({total}, {max})");
+            }
+        }
+
+        #[test]
+        fn band_cores_tile_the_image_with_no_gaps_or_overlaps() {
+            tiles_without_gaps_or_overlaps(30_000, 10_000, 512);
+            tiles_without_gaps_or_overlaps(11_520, 10_000, 512);
+            tiles_without_gaps_or_overlaps(10_001, 10_000, 512);
+            tiles_without_gaps_or_overlaps(9_999, 10_000, 512); // single band, no splitting needed
+        }
+
+        #[test]
+        fn a_line_fully_inside_the_overlap_is_kept_by_exactly_one_band() {
+            let found = bands(30_000, 10_000, 512)
+                .iter()
+                .filter(|band| keep_line(band, 9_700, 9_900, 30_000)) // inside the first seam's overlap
+                .count();
+            assert_eq!(found, 1);
+        }
+
+        #[test]
+        fn a_line_crossing_a_cut_is_kept_whole_by_the_next_band_only() {
+            let all = bands(30_000, 10_000, 512);
+            let seam = all[0].end; // 10_000: the cut between band 0 and band 1
+            let (top, bottom) = (seam - 20, seam + 20); // straddles the cut
+            assert!(!keep_line(&all[0], top, bottom, 30_000), "band 0 sees it touch its bottom seam");
+            assert!(keep_line(&all[1], top, bottom, 30_000), "band 1 has it whole");
+            let kept = all.iter().filter(|band| keep_line(band, top, bottom, 30_000)).count();
+            assert_eq!(kept, 1, "appears exactly once across all bands");
+        }
+
+        #[test]
+        fn a_line_touching_the_real_image_edge_is_kept() {
+            let all = bands(30_000, 10_000, 512);
+            assert!(keep_line(&all[0], 0, 30, 30_000), "touches the top of the image, not a seam");
+            let last = all.last().unwrap();
+            assert!(keep_line(last, 29_980, 30_000, 30_000), "touches the bottom of the image, not a seam");
+        }
+
+        #[test]
+        fn a_line_almost_as_tall_as_the_overlap_right_on_a_seam_still_appears_once() {
+            // Exactly as tall as the overlap AND perfectly centred on the crop seam (not the
+            // core boundary) touches BOTH neighbours' outer crop edges at once — the one
+            // coincidence `keep_line` can't resolve, excluded by design ("el solape debe
+            // superar CON MARGEN la línea más alta esperable"): a real line is never expected
+            // to be exactly that tall. One pixel short of it, which any real line still is, is
+            // enough to clear one of the two edges and be kept by exactly one band.
+            let all = bands(30_000, 10_000, 512);
+            let seam = all[0].end;
+            let kept = all.iter().filter(|band| keep_line(band, seam - 511, seam, 30_000)).count();
+            assert_eq!(kept, 1);
+        }
+
+        #[test]
+        fn process_line_joins_words_and_finds_sensitive_overlap() {
+            let words = [
+                ("Contacto:".to_string(), Rect { X: 0.0, Y: 0.0, Width: 80.0, Height: 20.0 }),
+                ("a@b.com".to_string(), Rect { X: 85.0, Y: 0.0, Width: 60.0, Height: 20.0 }),
+            ];
+            let line = process_line(&words);
+            assert_eq!(line.text, "Contacto: a@b.com");
+            assert_eq!(line.rect, Rect { X: 0.0, Y: 0.0, Width: 145.0, Height: 20.0 });
+            assert_eq!(line.sensitive, vec![(Category::Email, Rect { X: 85.0, Y: 0.0, Width: 60.0, Height: 20.0 })]);
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 mod vision {
     pub fn recognize(_path: &std::path::Path) -> Result<super::Recognized, String> {
-        Err("text recognition is only implemented on macOS".into())
+        Err("text recognition is only implemented on macOS and Windows".into())
     }
 }
 

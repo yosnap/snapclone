@@ -49,3 +49,65 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = ["
 objc2-core-text = { version = "0.3", default-features = false, features = ["CTFont", "CTLine", "CTStringAttributes", "objc2-core-graphics"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSObject", "NSProcessInfo", "NSRange", "NSString", "NSURL"] }
 objc2-vision = { version = "0.3", default-features = false, features = ["VNRequest", "VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNTypes", "objc2-core-foundation"] }
+
+[target.'cfg(windows)'.dependencies]
+# Evita que relanzar Snapclone mientras ya corre abra un segundo proceso (macOS resuelve esto
+# con RunEvent::Reopen).
+tauri-plugin-single-instance = "2"
+# Entrada canónica única para toda la crate `windows` en Windows: cada fase posterior (OCR,
+# compartir/arrastrar, portapapeles, fondo/sonido/explorer) AMPLÍA esta misma entrada con más
+# features en vez de declarar una nueva. Hoy solo se necesita GetCursorPos (puntero global,
+# movido aquí desde la Fase 10 para compartir el modelo de coordenadas).
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_Graphics_Gdi",
+    # OCR (Fase 3): Windows.Media.Ocr sobre una imagen decodificada en memoria.
+    "Foundation",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    # Compartir/arrastrar (Fase 4): panel de compartir nativo (DataTransferManager) y el
+    # anti-auto-drop de Arrastrar (GetAsyncKeyState).
+    "ApplicationModel_DataTransfer",
+    "Storage",
+    "Win32_UI_Shell",
+    "Win32_UI_Input_KeyboardAndMouse",
+    # Gaps menores (Fase 10): abrir carpeta/archivo sin subproceso (SHOpenFolderAndSelectItems,
+    # SHParseDisplayName, CoInitializeEx/CoTaskMemFree), "Enviar comentarios" (ShellExecuteW),
+    # fondo de escritorio (SystemParametersInfoW, ya cubierto por Win32_UI_WindowsAndMessaging)
+    # y sonido de captura (PlaySoundW).
+    "Win32_System_Com",
+    "Win32_Media_Audio",
+    "Win32_UI_Shell_Common",
+] }
+# Ya transitiva vía wry/tauri-runtime-wry a esta misma versión — declararla directamente solo
+# da acceso a sus tipos (ICoreWebView2Settings3) para desactivar los aceleradores de teclado
+# del navegador de WebView2 (F5/Ctrl+R recargarían la página y perderían la edición en curso).
+# No añade ninguna copia nueva al árbol de dependencias.
+webview2-com = "0.39.1"
+# Escribir en el portapapeles (Copiar): API simple, retries internos ante contención, y la
+# extensión `SetExtWindows` para excluir del Historial del portapapeles y de su sincronización
+# en la nube. Leer (Pegar) usa la API Win32 directa de arriba, no esta crate — ver Fase 5.
+arboard = "3.7.0"
+# `IIterable<IStorageItem>` (Fase 4, panel de compartir) y `.join()` sobre `IAsyncOperation`
+# (Fase 3 y 4) ya son dependencias DIRECTAS de la crate `windows` — aquí se declaran también
+# como propias solo para poder escribir `use windows_collections::...`/`use windows_future::...`
+# en este crate (Cargo no permite `use` de una dependencia transitiva). Mismas versiones que
+# `windows` 0.62.2 ya trae, cero copias nuevas.
+windows-collections = "0.3"
+windows-future = "0.3"
+# Arrastrar un archivo fuera del editor (drag-out). Trae por su cuenta `windows` 0.52 y
+# `windows-core` 0.58 (coste de supply chain aceptado, ver plan.md — no es la misma copia que
+# la entrada canónica de arriba).
+drag = "2.1.1"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# `xcap` ya trae `image` 0.25 (solo con la feature `png`); esta entrada activa `jpeg` en esa
+# MISMA copia para el resto de plataformas, sin duplicarla. Sin `tiff` a propósito (YAGNI +
+# superficie de ataque, hallazgo del red team): `FILE_FORMATS` solo acepta PNG/JPEG en ninguna
+# plataforma, así que un decodificador TIFF aquí no tendría ningún caso de uso real.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

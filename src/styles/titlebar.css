@@ -11,7 +11,23 @@
   align-items: center;
   gap: 8px;
   height: 44px;
-  padding: 0 12px 0 88px;
+  padding: 0 12px 0 88px; /* macOS: leaves room for the traffic lights */
+}
+
+/* Windows and Linux draw their own window controls natively; there is no gap to leave. */
+body.platform-windows .titlebar,
+body.platform-other .titlebar {
+  padding: 0 12px;
+}
+
+/* macOS has the menu bar icon for this; the title bar button exists for the other platforms. */
+.feedback-pill[data-action="capture"] {
+  display: none;
+}
+
+body.platform-windows .feedback-pill[data-action="capture"],
+body.platform-other .feedback-pill[data-action="capture"] {
+  display: flex;
 }
 
 .tool-pills {

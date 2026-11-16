@@ -1,3 +1,5 @@
+import { CAPTURE_ORIGIN } from "./platform";
+
 export type GradientStop = { offset: number; color: string };
 /** A soft radial highlight over a gradient; position and radius are fractions of the canvas. */
 export type Glow = { x: number; y: number; radius: number; color: string };
@@ -129,7 +131,7 @@ export const GRADIENT_PRESETS: GradientBackground[] = [
 ];
 
 /** Served by Rust from the main display's desktop picture; the page never names a file. */
-export const WALLPAPER_URL = "capture://localhost/wallpaper";
+export const WALLPAPER_URL = `${CAPTURE_ORIGIN}/wallpaper`;
 /** A small copy for the swatch, so the grid never loads the full picture. */
 const WALLPAPER_THUMBNAIL_URL = `${WALLPAPER_URL}/thumbnail`;
 

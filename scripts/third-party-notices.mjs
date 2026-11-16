@@ -17,28 +17,39 @@ function licenseTexts(dir) {
     .map((f) => `--- ${f} ---\n${readFileSync(join(dir, f), "utf8").trim()}`);
 }
 
-// Rust: crates reachable from the app through normal (non-dev, non-build) dependencies.
+// Every platform-specific target this app ships for; a crate reachable under ANY of them
+// needs its license here. macOS and Windows pull in disjoint `cfg(...)` dependency subtrees
+// (objc2-vision vs. windows/arboard/drag/rten), so a single `--filter-platform` always missed
+// one side.
+const TARGETS = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"];
+
+// Rust: crates reachable from the app through normal (non-dev, non-build) dependencies, on
+// any shipped target.
 function rustPackages() {
-  const meta = JSON.parse(
-    execFileSync(
-      "cargo",
-      ["metadata", "--format-version", "1", "--locked", "--filter-platform", "aarch64-apple-darwin"],
-      { cwd: join(root, "src-tauri"), maxBuffer: 1 << 28 },
-    ),
-  );
-  const packages = new Map(meta.packages.map((p) => [p.id, p]));
-  const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
+  const packages = new Map();
   const seen = new Set();
-  const stack = [meta.resolve.root];
-  while (stack.length) {
-    const id = stack.pop();
-    if (seen.has(id)) continue;
-    seen.add(id);
-    for (const dep of nodes.get(id).deps) {
-      if (dep.dep_kinds.some((k) => k.kind === null)) stack.push(dep.pkg);
+  for (const target of TARGETS) {
+    const meta = JSON.parse(
+      execFileSync("cargo", ["metadata", "--format-version", "1", "--locked", "--filter-platform", target], {
+        cwd: join(root, "src-tauri"),
+        maxBuffer: 1 << 28,
+      }),
+    );
+    for (const p of meta.packages) packages.set(p.id, p);
+    const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]));
+    const stack = [meta.resolve.root];
+    const visited = new Set();
+    while (stack.length) {
+      const id = stack.pop();
+      if (visited.has(id)) continue;
+      visited.add(id);
+      for (const dep of nodes.get(id).deps) {
+        if (dep.dep_kinds.some((k) => k.kind === null)) stack.push(dep.pkg);
+      }
     }
+    visited.delete(meta.resolve.root);
+    for (const id of visited) seen.add(id);
   }
-  seen.delete(meta.resolve.root);
   return [...seen].map((id) => {
     const p = packages.get(id);
     return {

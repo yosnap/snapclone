@@ -26,6 +26,13 @@ impl Rect {
         other.x >= self.x && other.y >= self.y && other.right() <= self.right() && other.bottom() <= self.bottom()
     }
 
+    /// Whether `point` lies on this rect: inclusive of the top-left, exclusive of the
+    /// bottom-right, so adjacent monitors that tile the virtual desktop with no gap never
+    /// both claim the pixel exactly on their shared edge.
+    pub fn contains_point(&self, point: (i32, i32)) -> bool {
+        point.0 >= self.x && point.1 >= self.y && i64::from(point.0) < self.right() && i64::from(point.1) < self.bottom()
+    }
+
     fn intersection_area(&self, other: &Rect) -> i64 {
         let width = self.right().min(other.right()) - i64::from(self.x.max(other.x));
         let height = self.bottom().min(other.bottom()) - i64::from(self.y.max(other.y));
@@ -35,6 +42,14 @@ impl Rect {
     fn area(&self) -> i64 {
         i64::from(self.width) * i64::from(self.height)
     }
+}
+
+/// Which monitor (by index into `monitors`) contains `point`, in whatever unit both share
+/// consistently (physical pixels on Windows, points on macOS). Used instead of converting each
+/// monitor to its own "points" independently, which does not compose across monitors at
+/// different DPI.
+pub fn monitor_at(point: (i32, i32), monitors: &[Rect]) -> Option<usize> {
+    monitors.iter().position(|monitor| monitor.contains_point(point))
 }
 
 /// Smallest gap kept between a centred window and the edges of the work area.
@@ -170,4 +185,22 @@ mod tests {
         let area = Rect::new(0, 0, 300, 200);
         assert_eq!(bezel(area, 180), Rect::new(60, 20, 180, 180));
     }
+
+    /// A laptop panel at 150% (physical 2560x1600) to the left of an external monitor at 100%
+    /// (physical 1920x1080), adjacent with no gap in PHYSICAL pixels — the space that matters
+    /// on Windows, where each monitor's own logical "points" would otherwise overlap or leave
+    /// a gap (see Phase 1 of the Windows port plan).
+    #[test]
+    fn monitor_at_finds_the_right_monitor_across_a_mixed_dpi_boundary() {
+        let laptop = Rect::new(0, 0, 2560, 1600);
+        let external = Rect::new(2560, 0, 1920, 1080);
+        let monitors = [laptop, external];
+        assert_eq!(monitor_at((100, 100), &monitors), Some(0));
+        assert_eq!(monitor_at((2560, 100), &monitors), Some(1), "the shared edge belongs to the monitor on its right");
+        assert_eq!(monitor_at((2559, 100), &monitors), Some(0));
+        assert_eq!(monitor_at((4479, 1079), &monitors), Some(1), "bottom-right corner of the external monitor");
+        assert_eq!(monitor_at((4480, 1079), &monitors), None, "past every monitor");
+        assert_eq!(monitor_at((100, 1600), &monitors), None, "below the laptop panel, off both monitors");
+    }
+
 }
